@@ -1,0 +1,264 @@
+---
+title: "GitHub Innovation Graph: Popular Languages by Country"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    df-print: paged
+    fig-width: 9
+    fig-height: 6
+editor:
+  markdown:
+    wrap: 80
+---
+
+## About the data
+
+We use the [GitHub Innovation Graph](https://github.com/github/innovationgraph)
+`languages.csv` dataset. Each row reports the number of distinct GitHub users
+who pushed code in a given **language**, from a given **economy** (ISO-3166-1
+alpha-2 code), in a given **quarter**.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+
+theme_set(theme_minimal(base_size = 11))
+
+langs <- read_csv("languages.csv", show_col_types = FALSE)
+glimpse(langs)
+```
+
+```{r}
+langs |>
+  summarise(
+    rows       = n(),
+    countries  = n_distinct(iso2_code),
+    languages  = n_distinct(language),
+    first_q    = min(paste0(year, "Q", quarter)),
+    last_q     = max(paste0(year, "Q", quarter))
+  )
+```
+
+A small ISO2 → country-name lookup so plots are readable. We only need names
+for the countries that will appear in the figures.
+
+```{r}
+country_name <- c(
+  US = "United States",   IN = "India",          CN = "China",
+  DE = "Germany",         GB = "United Kingdom", BR = "Brazil",
+  FR = "France",          JP = "Japan",          RU = "Russia",
+  CA = "Canada",          ES = "Spain",          IT = "Italy",
+  NL = "Netherlands",     KR = "South Korea",    AU = "Australia",
+  PL = "Poland",          UA = "Ukraine",        ID = "Indonesia",
+  TR = "Türkiye",         MX = "Mexico",         SE = "Sweden",
+  CH = "Switzerland",     IL = "Israel",         AR = "Argentina",
+  VN = "Vietnam",         TW = "Taiwan",         HK = "Hong Kong",
+  SG = "Singapore",       BE = "Belgium",        AT = "Austria",
+  IR = "Iran",            EG = "Egypt",          PK = "Pakistan",
+  BD = "Bangladesh",      NG = "Nigeria",        ZA = "South Africa",
+  RO = "Romania",         CZ = "Czechia",        FI = "Finland",
+  NO = "Norway",          DK = "Denmark",        PT = "Portugal",
+  IE = "Ireland",         GR = "Greece",         TH = "Thailand"
+)
+
+iso_to_name <- function(x) coalesce(country_name[x], x)
+```
+
+## Snapshot quarter
+
+We use the latest available quarter as the snapshot for "popular *now*".
+
+```{r}
+latest <- langs |> slice_max(year * 10 + quarter, n = 1) |>
+  distinct(year, quarter)
+latest
+
+snap <- langs |> semi_join(latest, by = c("year", "quarter"))
+```
+
+## Globally most-used languages (latest quarter)
+
+```{r fig-global-top}
+top_global <- snap |>
+  group_by(language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  slice_max(pushers, n = 15)
+
+ggplot(top_global, aes(pushers, fct_reorder(language, pushers))) +
+  geom_col(fill = "#2c7fb8") +
+  scale_x_continuous(labels = label_comma()) +
+  labs(
+    title    = sprintf("Top 15 languages on GitHub (%dQ%d)",
+                       latest$year, latest$quarter),
+    subtitle = "Number of distinct pushers, summed across all economies",
+    x = "Pushers", y = NULL
+  )
+```
+
+## #1 language in each country
+
+For every country with a meaningful amount of activity, we take its single
+most-used language in the latest quarter.
+
+```{r}
+country_totals <- snap |>
+  group_by(iso2_code) |>
+  summarise(total = sum(num_pushers), .groups = "drop")
+
+top_per_country <- snap |>
+  group_by(iso2_code, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  group_by(iso2_code) |>
+  slice_max(pushers, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  inner_join(country_totals, by = "iso2_code") |>
+  mutate(share = pushers / total)
+```
+
+Which language is #1 in how many countries?
+
+```{r fig-rank1-counts}
+rank1 <- top_per_country |>
+  count(language, sort = TRUE)
+
+ggplot(rank1, aes(n, fct_reorder(language, n))) +
+  geom_col(fill = "#41b6c4") +
+  geom_text(aes(label = n), hjust = -0.2, size = 3) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title    = "How many countries have each language as their #1?",
+    subtitle = "Counting one language per country (latest quarter)",
+    x = "Number of countries", y = NULL
+  )
+```
+
+The top-25 countries by total pushers, with their #1 language:
+
+```{r}
+top_per_country |>
+  slice_max(total, n = 25) |>
+  transmute(
+    Country  = iso_to_name(iso2_code),
+    `#1 language` = language,
+    Pushers  = comma(pushers),
+    `Share of country` = percent(share, accuracy = 0.1)
+  )
+```
+
+## Heatmap: top languages × top countries
+
+For the 20 most-active countries we compute each language's share of pushers
+*within that country*, then keep the 15 globally most-used languages.
+
+```{r fig-heatmap, fig.width=10, fig.height=7}
+top_countries <- country_totals |>
+  slice_max(total, n = 20) |>
+  pull(iso2_code)
+
+top_langs <- top_global$language
+
+heat <- snap |>
+  filter(iso2_code %in% top_countries, language %in% top_langs) |>
+  group_by(iso2_code, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(country_totals, by = "iso2_code") |>
+  mutate(
+    share        = pushers / total,
+    country_name = iso_to_name(iso2_code),
+    country_name = fct_reorder(country_name, total),
+    language     = factor(language, levels = rev(top_langs))
+  ) |>
+  mutate(text_color = if_else(share > 0.5 * max(share), "white", "grey15"))
+
+ggplot(heat, aes(country_name, language, fill = share)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  geom_text(aes(label = percent(share, accuracy = 1), color = text_color),
+            size = 2.7) +
+  scale_color_identity() +
+  scale_fill_viridis_c(option = "mako", direction = -1, end = 0.85,
+                       labels = label_percent(),
+                       name   = "Share of\ncountry's pushers") +
+  labs(
+    title    = "Language mix within the 20 most active economies",
+    subtitle = "Each cell = % of that country's pushers using that language",
+    x = NULL, y = NULL
+  ) +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1))
+```
+
+## Where is each language disproportionately popular?
+
+A language's "national share" minus its "global share" highlights places
+where it is *over-* or *under*-represented.
+
+```{r fig-skew, fig.width=10, fig.height=7}
+global_share <- snap |>
+  group_by(language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  mutate(global_share = pushers / sum(pushers)) |>
+  select(language, global_share)
+
+focus_langs <- c("Python", "JavaScript", "TypeScript", "Java",
+                 "C++", "C#", "Go", "Rust", "PHP", "Ruby")
+
+skew <- snap |>
+  filter(iso2_code %in% top_countries, language %in% focus_langs) |>
+  group_by(iso2_code, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(country_totals, by = "iso2_code") |>
+  mutate(country_share = pushers / total) |>
+  inner_join(global_share, by = "language") |>
+  mutate(
+    delta        = country_share - global_share,
+    country_name = iso_to_name(iso2_code)
+  )
+
+ggplot(skew, aes(delta, fct_reorder(country_name, delta),
+                 fill = delta > 0)) +
+  geom_col() +
+  geom_vline(xintercept = 0, linewidth = 0.3) +
+  facet_wrap(~ language, scales = "free_x") +
+  scale_x_continuous(labels = label_percent(accuracy = 1)) +
+  scale_fill_manual(values = c(`TRUE` = "#1b9e77", `FALSE` = "#d95f02"),
+                    guide = "none") +
+  labs(
+    title    = "Local share − global share, by language",
+    subtitle = "Positive = country uses this language more than the global average",
+    x = "Difference (percentage points)", y = NULL
+  ) +
+  theme(strip.text = element_text(face = "bold"))
+```
+
+## Trend over time
+
+How have the headline languages moved globally since 2020?
+
+```{r fig-trend, fig.width=10, fig.height=5}
+trend <- langs |>
+  filter(language %in% focus_langs) |>
+  group_by(year, quarter, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  mutate(date = yq(paste0(year, " Q", quarter)))
+
+ggplot(trend, aes(date, pushers, color = language)) +
+  geom_line(linewidth = 0.8) +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_brewer(palette = "Paired") +
+  labs(
+    title    = "Quarterly pushers per language, worldwide",
+    x = NULL, y = "Pushers", color = NULL
+  )
+```
+
+## Takeaways
+
+-   **Python and JavaScript dominate** the global top-15, but the *#1*
+    language varies by country — JavaScript leads in many Western and Latin
+    American economies, while Python tops more of Asia.
+-   **C++** is over-represented in China, Russia and a handful of other
+    Eastern European economies, relative to its global share.
+-   **Go** and **Rust** skew toward developed economies (US, Germany,
+    Switzerland, Nordics) where systems-programming work is concentrated.
+-   The trend chart shows TypeScript and Python continuing to grow while
+    older web languages flatten.

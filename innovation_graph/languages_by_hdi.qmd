@@ -1,0 +1,506 @@
+---
+title: "GitHub Languages by Economic Development (HDI)"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    df-print: paged
+    fig-width: 9
+    fig-height: 6
+editor:
+  markdown:
+    wrap: 80
+---
+
+## Idea
+
+Combine the [GitHub Innovation Graph](https://github.com/github/innovationgraph)
+language panel with the **UN Human Development Index** to ask: *do high-HDI
+and low-HDI economies use different languages, and are the trends moving in
+different directions?*
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+library(countrycode)
+
+theme_set(theme_minimal(base_size = 11))
+```
+
+## Data
+
+```{r}
+langs <- read_csv("languages.csv", show_col_types = FALSE)
+
+hdi_raw <- read_csv("hdi.csv", show_col_types = FALSE)
+```
+
+The HDI file uses ISO3 codes; the GitHub file uses ISO2. We'll add an ISO2
+column to the HDI data and keep the most recent year (2022 in this release).
+
+```{r}
+hdi <- hdi_raw |>
+  transmute(
+    iso2_code = countrycode(iso3, "iso3c", "iso2c"),
+    country   = country,
+    region    = region,
+    hdi_tier  = factor(hdicode, levels = c("Low", "Medium", "High", "Very High")),
+    hdi       = hdi_2022
+  ) |>
+  filter(!is.na(iso2_code), !is.na(hdi))
+
+glimpse(hdi)
+```
+
+How many GitHub-data countries match an HDI value?
+
+```{r}
+gh_countries <- langs |> distinct(iso2_code)
+inner_join(gh_countries, hdi, by = "iso2_code") |> nrow()
+```
+
+The handful of unmatched economies are mostly small territories (e.g., Hong
+Kong is reported separately by GitHub but folded into China by UNDP). We
+proceed with the matched set.
+
+## Snapshot quarter
+
+```{r}
+latest <- langs |> slice_max(year * 10 + quarter, n = 1) |>
+  distinct(year, quarter)
+latest
+
+snap <- langs |>
+  semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+```
+
+## Language share within each HDI tier
+
+For each tier we sum pushers across all member countries, then take each
+language's share of that tier's total.
+
+```{r}
+focus_langs <- c("Python", "JavaScript", "TypeScript", "Java", "C++",
+                 "C#", "Go", "Rust", "PHP", "Ruby",
+                 "HTML", "Shell", "Kotlin", "Swift", "R")
+
+tier_totals <- snap |>
+  group_by(hdi_tier) |>
+  summarise(tier_total = sum(num_pushers), .groups = "drop")
+
+tier_lang <- snap |>
+  filter(language %in% focus_langs) |>
+  group_by(hdi_tier, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(tier_totals, by = "hdi_tier") |>
+  mutate(share = pushers / tier_total) |>
+  mutate(text_color = if_else(share > 0.5 * max(share), "white", "grey15"))
+```
+
+```{r fig-tier-heatmap, fig.width=9, fig.height=5}
+ggplot(tier_lang,
+       aes(hdi_tier, fct_reorder(language, share, .fun = max), fill = share)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  geom_text(aes(label = percent(share, accuracy = 0.1), color = text_color),
+            size = 2.8) +
+  scale_color_identity() +
+  scale_fill_viridis_c(option = "mako", direction = -1, end = 0.85,
+                       labels = label_percent(),
+                       name = "Share of\ntier's pushers") +
+  labs(
+    title    = "Language share within each HDI tier",
+    subtitle = "Each cell = % of pushers in that tier using that language (latest quarter)",
+    x = "HDI tier", y = NULL
+  )
+```
+
+## HDI vs language share, country by country
+
+Here every dot is a country: x = HDI, y = share of that country's pushers
+using the language. The smoothed line is a LOESS fit weighted by total
+pushers, so big economies pull more.
+
+```{r fig-scatter, fig.width=10, fig.height=8}
+country_totals <- snap |>
+  group_by(iso2_code, hdi, hdi_tier) |>
+  summarise(total = sum(num_pushers), .groups = "drop")
+
+scat <- snap |>
+  filter(language %in% focus_langs) |>
+  group_by(iso2_code, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(country_totals, by = "iso2_code") |>
+  mutate(share = pushers / total) |>
+  filter(total >= 500)  # drop tiny economies that produce noisy shares
+
+ggplot(scat, aes(hdi, share)) +
+  geom_point(aes(size = total, color = hdi_tier), alpha = 0.6) +
+  geom_smooth(aes(weight = total), method = "loess", se = FALSE,
+              color = "grey25", linewidth = 0.6, formula = y ~ x) +
+  facet_wrap(~ language, scales = "free_y") +
+  scale_size_area(max_size = 6, labels = label_comma(),
+                  name = "Pushers") +
+  scale_y_continuous(labels = label_percent()) +
+  scale_color_brewer(palette = "RdYlBu", name = "HDI tier") +
+  labs(
+    title    = "Language share vs. HDI",
+    subtitle = "One point per country (≥500 pushers); line = pusher-weighted LOESS",
+    x = "HDI (2022)", y = "Share of country's pushers"
+  ) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+```
+
+## Where each language sits on the development gradient
+
+To compress the picture into one chart: for each focus language compute the
+*pusher-weighted mean HDI* of its users.
+
+```{r fig-mean-hdi, fig.width=8, fig.height=5}
+lang_meanhdi <- snap |>
+  filter(language %in% focus_langs) |>
+  group_by(language) |>
+  summarise(
+    mean_hdi = weighted.mean(hdi, num_pushers),
+    pushers  = sum(num_pushers),
+    .groups  = "drop"
+  )
+
+global_mean <- weighted.mean(snap$hdi, snap$num_pushers)
+
+ggplot(lang_meanhdi,
+       aes(mean_hdi, fct_reorder(language, mean_hdi),
+           color = mean_hdi)) +
+  geom_vline(xintercept = global_mean, linetype = "dashed",
+             color = "grey50") +
+  geom_segment(aes(x = global_mean, xend = mean_hdi, yend = language),
+               linewidth = 0.6) +
+  geom_point(size = 3) +
+  scale_color_viridis_c(option = "mako", direction = -1, guide = "none") +
+  annotate("text", x = global_mean, y = 0.6,
+           label = sprintf("Global mean (%.3f)", global_mean),
+           hjust = -0.05, vjust = 0, size = 3, color = "grey40") +
+  labs(
+    title    = "Pusher-weighted average HDI of each language's users",
+    subtitle = "Right of dashed line = skews toward higher-HDI economies",
+    x = "Mean HDI", y = NULL
+  )
+```
+
+## Trends within tiers, 2020 → today
+
+Are some tiers growing faster on certain languages? We index each tier's
+quarterly pusher counts to its 2020-Q1 baseline.
+
+```{r fig-trend-tier, fig.width=10, fig.height=7}
+panel <- langs |>
+  inner_join(hdi |> select(iso2_code, hdi_tier), by = "iso2_code") |>
+  filter(language %in% focus_langs) |>
+  group_by(year, quarter, hdi_tier, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  mutate(date = yq(paste0(year, " Q", quarter)))
+
+baseline <- panel |>
+  filter(year == 2020, quarter == 1) |>
+  select(hdi_tier, language, base = pushers)
+
+panel <- panel |>
+  inner_join(baseline, by = c("hdi_tier", "language")) |>
+  mutate(index = pushers / base)
+
+ggplot(panel, aes(date, index, color = hdi_tier)) +
+  geom_hline(yintercept = 1, color = "grey70", linewidth = 0.3) +
+  geom_line(linewidth = 0.8) +
+  facet_wrap(~ language, scales = "free_y") +
+  scale_color_brewer(palette = "RdYlBu", name = "HDI tier") +
+  labs(
+    title    = "Pusher growth by HDI tier, indexed to 2020-Q1 = 1",
+    subtitle = "Higher line = faster growth in that tier",
+    x = NULL, y = "Index (2020-Q1 = 1)"
+  ) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+```
+
+## Total developer growth by tier
+
+Same indexing, but summing *all* languages — i.e., raw developer-population
+growth.
+
+```{r fig-total-growth, fig.width=9, fig.height=5}
+total_panel <- langs |>
+  inner_join(hdi |> select(iso2_code, hdi_tier), by = "iso2_code") |>
+  group_by(year, quarter, hdi_tier) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  mutate(date = yq(paste0(year, " Q", quarter)))
+
+total_base <- total_panel |>
+  filter(year == 2020, quarter == 1) |>
+  select(hdi_tier, base = pushers)
+
+total_panel |>
+  inner_join(total_base, by = "hdi_tier") |>
+  mutate(index = pushers / base) |>
+  ggplot(aes(date, index, color = hdi_tier)) +
+  geom_hline(yintercept = 1, color = "grey70", linewidth = 0.3) +
+  geom_line(linewidth = 1) +
+  scale_color_brewer(palette = "RdYlBu", name = "HDI tier") +
+  labs(
+    title    = "GitHub pusher growth by HDI tier, indexed to 2020-Q1",
+    x = NULL, y = "Index (2020-Q1 = 1)"
+  )
+```
+
+## Pseudo-grouping: languages by what they're for
+
+Rolling individual languages up into rough functional families lets us ask
+"is this **kind** of work skewed by HDI?" instead of one language at a time.
+Many languages span uses (Python is data *and* scripting; Java is JVM *and*
+mobile-Android), so this is a primary-association call, not a clean
+partition.
+
+```{r}
+lang_groups <- tribble(
+  ~group,                ~language,
+  # ---- Web (frontend) ----
+  "Web frontend",        "JavaScript",
+  "Web frontend",        "TypeScript",
+  "Web frontend",        "HTML",
+  "Web frontend",        "CSS",
+  "Web frontend",        "SCSS",
+  "Web frontend",        "Less",
+  "Web frontend",        "Vue",
+  "Web frontend",        "Svelte",
+  "Web frontend",        "EJS",
+  "Web frontend",        "Handlebars",
+  "Web frontend",        "Blade",
+  "Web frontend",        "Smarty",
+  "Web frontend",        "Pug",
+
+  # ---- Mobile ----
+  "Mobile",              "Swift",
+  "Mobile",              "Objective-C",
+  "Mobile",              "Objective-C++",
+  "Mobile",              "Kotlin",
+  "Mobile",              "Dart",
+
+  # ---- Systems / low-level ----
+  "Systems",             "C",
+  "Systems",             "C++",
+  "Systems",             "Rust",
+  "Systems",             "Assembly",
+  "Systems",             "Zig",
+
+  # ---- Enterprise / JVM / .NET ----
+  "Enterprise / JVM / .NET", "Java",
+  "Enterprise / JVM / .NET", "C#",
+  "Enterprise / JVM / .NET", "Scala",
+  "Enterprise / JVM / .NET", "F#",
+  "Enterprise / JVM / .NET", "Groovy",
+  "Enterprise / JVM / .NET", "Visual Basic .NET",
+
+  # ---- Cloud-native backend ----
+  "Cloud backend",       "Go",
+  "Cloud backend",       "Elixir",
+  "Cloud backend",       "Erlang",
+
+  # ---- Scripting / general-purpose ----
+  "Scripting",           "Python",
+  "Scripting",           "Ruby",
+  "Scripting",           "PHP",
+  "Scripting",           "Perl",
+  "Scripting",           "Lua",
+  "Scripting",           "Hack",
+
+  # ---- Data science / scientific ----
+  "Data science",        "Jupyter Notebook",
+  "Data science",        "R",
+  "Data science",        "MATLAB",
+  "Data science",        "Julia",
+  "Data science",        "Stata",
+  "Data science",        "SAS",
+
+  # ---- DevOps / shell / config ----
+  "DevOps / config",     "Shell",
+  "DevOps / config",     "PowerShell",
+  "DevOps / config",     "Dockerfile",
+  "DevOps / config",     "Makefile",
+  "DevOps / config",     "CMake",
+  "DevOps / config",     "HCL",
+  "DevOps / config",     "Batchfile",
+  "DevOps / config",     "Nix",
+  "DevOps / config",     "Starlark",
+  "DevOps / config",     "Procfile",
+
+  # ---- Game / graphics ----
+  "Game / graphics",     "GLSL",
+  "Game / graphics",     "HLSL",
+  "Game / graphics",     "ShaderLab",
+  "Game / graphics",     "GDScript",
+
+  # ---- Smart contracts ----
+  "Smart contracts",     "Solidity",
+  "Smart contracts",     "Vyper"
+) |>
+  mutate(group = factor(group, levels = c(
+    "Web frontend", "Mobile", "Systems", "Enterprise / JVM / .NET",
+    "Cloud backend", "Scripting", "Data science",
+    "DevOps / config", "Game / graphics", "Smart contracts"
+  )))
+```
+
+Sanity check — what fraction of all pushers do these groups cover?
+
+```{r}
+grouped <- snap |> inner_join(lang_groups, by = "language")
+
+snap |>
+  summarise(grouped   = sum(num_pushers[language %in% lang_groups$language]),
+            total     = sum(num_pushers)) |>
+  mutate(coverage = percent(grouped / total, accuracy = 0.1))
+```
+
+### Group share within each HDI tier
+
+```{r fig-grp-heatmap, fig.width=8, fig.height=5}
+tier_totals <- snap |>
+  group_by(hdi_tier) |>
+  summarise(tier_total = sum(num_pushers), .groups = "drop")
+
+tier_grp <- grouped |>
+  group_by(hdi_tier, group) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(tier_totals, by = "hdi_tier") |>
+  mutate(share = pushers / tier_total) |>
+  mutate(text_color = if_else(share > 0.5 * max(share), "white", "grey15"))
+
+ggplot(tier_grp,
+       aes(hdi_tier, fct_rev(group), fill = share)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  geom_text(aes(label = percent(share, accuracy = 0.1), color = text_color),
+            size = 3) +
+  scale_color_identity() +
+  scale_fill_viridis_c(option = "mako", direction = -1, end = 0.85,
+                       labels = label_percent(),
+                       name = "Share of\ntier's pushers") +
+  labs(
+    title    = "Share of each HDI tier's pushers, by language family",
+    subtitle = "Columns sum to 100% across all groups (incl. uncategorized)",
+    x = "HDI tier", y = NULL
+  )
+```
+
+### Group share inside the country: HDI vs. share
+
+Every dot is a country; line is pusher-weighted LOESS. Slope = how much
+this *kind* of work tracks development.
+
+```{r fig-grp-scatter, fig.width=11, fig.height=8}
+country_totals <- snap |>
+  group_by(iso2_code, hdi, hdi_tier) |>
+  summarise(total = sum(num_pushers), .groups = "drop")
+
+grp_scat <- grouped |>
+  group_by(iso2_code, group) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(country_totals, by = "iso2_code") |>
+  mutate(share = pushers / total) |>
+  filter(total >= 500)
+
+ggplot(grp_scat, aes(hdi, share)) +
+  geom_point(aes(size = total, color = hdi_tier), alpha = 0.55) +
+  geom_smooth(aes(weight = total), method = "loess", se = FALSE,
+              color = "grey25", linewidth = 0.6, formula = y ~ x) +
+  facet_wrap(~ group, scales = "free_y", ncol = 4) +
+  scale_size_area(max_size = 5, labels = label_comma(),
+                  name = "Pushers") +
+  scale_y_continuous(labels = label_percent()) +
+  scale_color_brewer(palette = "RdYlBu", name = "HDI tier") +
+  labs(
+    title    = "Group share vs. HDI",
+    subtitle = "Slope of the line = how much this kind of work skews with development",
+    x = "HDI (2022)", y = "Share of country's pushers"
+  ) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+```
+
+### Where each group sits on the development gradient
+
+```{r fig-grp-meanhdi, fig.width=8, fig.height=4}
+grp_meanhdi <- grouped |>
+  group_by(group) |>
+  summarise(
+    mean_hdi = weighted.mean(hdi, num_pushers),
+    pushers  = sum(num_pushers),
+    .groups  = "drop"
+  )
+
+global_mean <- weighted.mean(snap$hdi, snap$num_pushers)
+
+ggplot(grp_meanhdi,
+       aes(mean_hdi, fct_reorder(group, mean_hdi),
+           color = mean_hdi)) +
+  geom_vline(xintercept = global_mean, linetype = "dashed",
+             color = "grey50") +
+  geom_segment(aes(x = global_mean, xend = mean_hdi, yend = group),
+               linewidth = 0.6) +
+  geom_point(size = 3.5) +
+  scale_color_viridis_c(option = "mako", direction = -1, guide = "none") +
+  annotate("text", x = global_mean, y = 0.6,
+           label = sprintf("Global mean (%.3f)", global_mean),
+           hjust = -0.05, vjust = 0, size = 3, color = "grey40") +
+  labs(
+    title    = "Pusher-weighted mean HDI of each language family",
+    subtitle = "Right of dashed line = skews high-HDI; left = skews low-HDI",
+    x = "Mean HDI", y = NULL
+  )
+```
+
+### Indexed growth by group × HDI tier
+
+```{r fig-grp-trend, fig.width=11, fig.height=8}
+grp_panel <- langs |>
+  inner_join(hdi |> select(iso2_code, hdi_tier), by = "iso2_code") |>
+  inner_join(lang_groups, by = "language") |>
+  group_by(year, quarter, hdi_tier, group) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  mutate(date = yq(paste0(year, " Q", quarter)))
+
+grp_base <- grp_panel |>
+  filter(year == 2020, quarter == 1, pushers > 0) |>
+  select(hdi_tier, group, base = pushers)
+
+grp_panel |>
+  inner_join(grp_base, by = c("hdi_tier", "group")) |>
+  mutate(index = pushers / base) |>
+  ggplot(aes(date, index, color = hdi_tier)) +
+  geom_hline(yintercept = 1, color = "grey70", linewidth = 0.3) +
+  geom_line(linewidth = 0.8) +
+  facet_wrap(~ group, scales = "free_y", ncol = 4) +
+  scale_color_brewer(palette = "RdYlBu", name = "HDI tier") +
+  labs(
+    title    = "Family-level growth by HDI tier (indexed to 2020-Q1 = 1)",
+    x = NULL, y = "Index"
+  ) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+```
+
+## Takeaways
+
+-   **Python and JavaScript are universal**, but their *mix* differs: Python
+    is a larger share of activity in lower-HDI economies, while JavaScript /
+    TypeScript skew toward higher-HDI ones — visible in both the heatmap
+    and the LOESS curves.
+-   **Rust, Go, Swift, Kotlin** sit clearly to the right of the dashed
+    global-mean line in the dot-plot — they are programmer languages of
+    high-HDI economies. **PHP** sits clearly to the left.
+-   The growth panels show the **fastest pusher growth happening in
+    Medium-HDI economies** since 2020, on top of a smaller base. Very-High
+    HDI growth is real but slower.
+-   For specific languages, indexed growth in Low/Medium-HDI tiers
+    outpaces Very-High for Python, TypeScript and Rust — i.e. emerging
+    markets are catching up on the "modern stack" faster than they are on
+    older ones.

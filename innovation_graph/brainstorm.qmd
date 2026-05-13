@@ -1,0 +1,576 @@
+---
+title: "Brainstorm: more views on the Innovation Graph × HDI data"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    df-print: paged
+    fig-width: 9
+    fig-height: 5
+editor:
+  markdown:
+    wrap: 80
+---
+
+## What this notebook is
+
+A scratchpad of **visualization ideas** crossing the GitHub Innovation Graph
+(`languages.csv`, `topics.csv`, `developers.csv`, `repositories.csv`) with the
+UN HDI table. The existing notebooks (`languages_by_hdi.qmd`,
+`topics_by_hdi.qmd`) only touch `hdi_2022` and ignore most of the columns in
+`hdi.csv`. Plenty of unexplored angles below — pick the ones worth turning
+into proper charts.
+
+Every section is a single short chunk producing one figure. None of these
+are polished — they're sketches.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+library(countrycode)
+
+theme_set(theme_minimal(base_size = 11))
+```
+
+```{r data, message=FALSE, warning=FALSE}
+langs   <- read_csv("languages.csv",   show_col_types = FALSE) |>
+  filter(iso2_code != "EU")
+topics  <- read_csv("topics.csv",      show_col_types = FALSE) |>
+  filter(iso2_code != "EU", !topic %in% c("config", "github-config"))
+devs    <- read_csv("developers.csv",  show_col_types = FALSE) |>
+  filter(iso2_code != "EU")
+repos   <- read_csv("repositories.csv", show_col_types = FALSE) |>
+  filter(iso2_code != "EU")
+hdi_raw <- read_csv("hdi.csv",         show_col_types = FALSE)
+
+hdi <- hdi_raw |>
+  transmute(
+    iso2_code = countrycode(iso3, "iso3c", "iso2c"),
+    country, region,
+    hdi_tier   = factor(hdicode, levels = c("Low", "Medium", "High", "Very High")),
+    hdi_1990, hdi_2022,
+    hdi_delta  = hdi_2022 - hdi_1990,
+    gnipc_2022, mys_2022, eys_2022, le_2022
+  ) |>
+  filter(!is.na(iso2_code), !is.na(hdi_2022))
+
+latest <- langs |> slice_max(year * 10 + quarter, n = 1) |>
+  distinct(year, quarter)
+
+langs_snap  <- langs  |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+topics_snap <- topics |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+devs_snap   <- devs   |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+repos_snap  <- repos  |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+```
+
+---
+
+## Idea 1: regions, not tiers
+
+The HDI table has a `region` column (SSA, LAC, EAP, ECA, AS, SA, …) that the
+existing notebooks ignore entirely. Pushers per region for the latest
+quarter — does the picture look different than the HDI tier view?
+
+```{r idea1}
+devs_snap |>
+  filter(!is.na(region)) |>
+  group_by(region) |>
+  summarise(developers = sum(developers), .groups = "drop") |>
+  ggplot(aes(developers, fct_reorder(region, developers))) +
+  geom_col(fill = "#2c7fb8") +
+  scale_x_continuous(labels = label_number(scale_cut = cut_short_scale())) +
+  labs(title = "GitHub developers by UNDP region (latest quarter)",
+       x = "Developers", y = NULL)
+```
+
+---
+
+## Idea 2: HDI change 1990→2022 vs. GitHub footprint
+
+Did countries that *climbed* the HDI ladder over the past three decades end
+up with bigger or smaller GitHub footprints than their current HDI alone
+would predict? Each dot is a country.
+
+```{r idea2}
+devs_snap |>
+  filter(!is.na(hdi_delta), developers > 100) |>
+  ggplot(aes(hdi_delta, developers, color = hdi_tier)) +
+  geom_point(alpha = 0.7, size = 2) +
+  scale_y_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_color_brewer(palette = "RdYlBu") +
+  labs(title = "HDI gain (1990→2022) vs. GitHub developers today",
+       subtitle = "Are 'late developers' over- or under-represented on GitHub?",
+       x = "Δ HDI 1990 → 2022", y = "Developers (log)")
+```
+
+---
+
+## Idea 3: GNI per capita as a continuous predictor
+
+HDI tiers are a 4-bucket compression of much richer underlying economics.
+GNI per capita gives a continuous, log-scaled signal that may separate
+languages more cleanly than the tier heatmap.
+
+```{r idea3}
+country_totals <- langs_snap |>
+  group_by(iso2_code, gnipc_2022) |>
+  summarise(total = sum(num_pushers), .groups = "drop")
+
+focus <- c("Python", "JavaScript", "TypeScript", "Rust", "Go", "PHP", "R")
+
+langs_snap |>
+  filter(language %in% focus) |>
+  group_by(iso2_code, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(country_totals, by = "iso2_code") |>
+  mutate(share = pushers / total) |>
+  filter(total >= 500, !is.na(gnipc_2022)) |>
+  ggplot(aes(gnipc_2022, share, color = language)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_smooth(se = FALSE, method = "loess", formula = y ~ x, linewidth = 0.6) +
+  scale_x_log10(labels = label_dollar()) +
+  scale_y_continuous(labels = label_percent()) +
+  facet_wrap(~ language, scales = "free_y") +
+  labs(title = "Language share vs. GNI per capita (log scale)",
+       x = "GNI per capita 2022 (USD, log)", y = "Share of country's pushers") +
+  theme(legend.position = "none")
+```
+
+---
+
+## Idea 4: education years vs. developer density
+
+Does **mean years of schooling** track GitHub footprint better than HDI? A
+single continuous education variable plotted against developer count.
+
+```{r idea4}
+devs_snap |>
+  filter(!is.na(mys_2022), developers > 100) |>
+  ggplot(aes(mys_2022, developers, color = hdi_tier)) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "grey25",
+              linewidth = 0.5, formula = y ~ x) +
+  scale_y_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_color_brewer(palette = "RdYlBu") +
+  labs(title = "Mean years of schooling vs. GitHub developers",
+       x = "Mean years of schooling (2022)", y = "Developers (log)")
+```
+
+---
+
+## Idea 5: language type mix per tier
+
+`languages.csv` has a `language_type` column (programming, markup, data,
+prose) that no notebook touches. What share of each tier's pushers is on
+each *kind* of language?
+
+```{r idea5}
+langs_snap |>
+  group_by(hdi_tier, language_type) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  group_by(hdi_tier) |>
+  mutate(share = pushers / sum(pushers)) |>
+  ggplot(aes(hdi_tier, share, fill = language_type)) +
+  geom_col() +
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Composition of language activity by language_type",
+       subtitle = "Same stack of programming vs. markup vs. data vs. prose across tiers?",
+       x = "HDI tier", y = "Share of tier's pushers")
+```
+
+---
+
+## Idea 6: language diversity (Shannon entropy) per country
+
+How concentrated vs. spread out is each country's language activity? Low
+entropy → one or two dominant languages. High entropy → broad mix. Does
+diversity track with HDI?
+
+```{r idea6}
+langs_snap |>
+  group_by(iso2_code, country, hdi_2022, hdi_tier) |>
+  summarise(
+    H = {p <- num_pushers / sum(num_pushers); -sum(p * log(p))},
+    total = sum(num_pushers),
+    .groups = "drop"
+  ) |>
+  filter(total >= 500) |>
+  ggplot(aes(hdi_2022, H, color = hdi_tier, size = total)) +
+  geom_point(alpha = 0.7) +
+  scale_size_area(max_size = 6, labels = label_comma()) +
+  scale_color_brewer(palette = "RdYlBu") +
+  labs(title = "Language-mix diversity (Shannon entropy) vs. HDI",
+       subtitle = "Higher = more languages share the pie; lower = a few dominate",
+       x = "HDI (2022)", y = "Shannon entropy")
+```
+
+---
+
+## Idea 7: topic diversity per country
+
+Same idea, but for topics. Topics are noisier (tagging behavior varies a
+lot) — does this make the diversity-HDI relationship cleaner or messier
+than for languages?
+
+```{r idea7}
+topics_snap |>
+  group_by(iso2_code, country, hdi_2022, hdi_tier) |>
+  summarise(
+    H_topics  = {p <- num_pushers / sum(num_pushers); -sum(p * log(p))},
+    n_topics  = n(),
+    total     = sum(num_pushers),
+    .groups   = "drop"
+  ) |>
+  filter(total >= 200) |>
+  ggplot(aes(n_topics, H_topics, color = hdi_tier)) +
+  geom_point(alpha = 0.7, size = 2) +
+  scale_color_brewer(palette = "RdYlBu") +
+  labs(title = "Topic count vs. topic-mix entropy per country",
+       subtitle = "Lower-HDI economies have both fewer topics AND less even mix",
+       x = "Distinct topics with data", y = "Shannon entropy across topics")
+```
+
+---
+
+## Idea 8: hacktoberfest seasonality
+
+`hacktoberfest` is unique — the only topic with a hard October driver. The
+shape of the Q4 spike per tier is a window into how each tier responds to
+community events.
+
+```{r idea8}
+topics |>
+  filter(topic == "hacktoberfest") |>
+  inner_join(hdi |> select(iso2_code, hdi_tier), by = "iso2_code") |>
+  group_by(year, quarter, hdi_tier) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  mutate(date = yq(paste0(year, " Q", quarter))) |>
+  ggplot(aes(date, pushers, color = hdi_tier)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.5) +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_brewer(palette = "RdYlBu") +
+  labs(title = "Hacktoberfest pushers by HDI tier, every quarter",
+       subtitle = "Q4 spikes — how does each tier respond to a community event?",
+       x = NULL, y = "Pushers in hacktoberfest-tagged repos")
+```
+
+---
+
+## Idea 9: when each tier first showed up on emerging topics
+
+For topics like `llm`, `ai`, `langchain`, `rag`: which tier crossed the
+privacy threshold first, and how fast did the others follow?
+
+```{r idea9}
+emerging <- c("llm", "ai", "langchain", "deep-learning", "stable-diffusion",
+              "openai", "gpt", "huggingface")
+
+topics |>
+  filter(topic %in% emerging) |>
+  inner_join(hdi |> select(iso2_code, hdi_tier), by = "iso2_code") |>
+  group_by(topic, hdi_tier, year, quarter) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  filter(pushers > 0) |>
+  group_by(topic, hdi_tier) |>
+  slice_min(year * 10 + quarter, n = 1) |>
+  mutate(first_q = yq(paste0(year, " Q", quarter))) |>
+  ggplot(aes(first_q, fct_reorder(topic, as.numeric(first_q)),
+             color = hdi_tier, shape = hdi_tier)) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "RdYlBu") +
+  labs(title = "First quarter each tier crosses the 100-dev floor on AI topics",
+       x = "First appearance", y = NULL)
+```
+
+---
+
+## Idea 10: topic peak quarter — what's rising vs. falling
+
+For the top 40 topics, when did each peak? A topic peaking *recently* is
+rising; peaking in 2020-2021 is fading. Color = direction.
+
+```{r idea10}
+top_topics <- topics |>
+  group_by(topic) |>
+  summarise(total = sum(num_pushers), .groups = "drop") |>
+  slice_max(total, n = 40)
+
+peaks <- topics |>
+  semi_join(top_topics, by = "topic") |>
+  group_by(topic, year, quarter) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  group_by(topic) |>
+  slice_max(pushers, n = 1) |>
+  mutate(peak_q = yq(paste0(year, " Q", quarter)))
+
+ggplot(peaks, aes(peak_q, fct_reorder(topic, peak_q),
+                  color = year >= 2024)) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = c("TRUE" = "#1a9850", "FALSE" = "#d73027"),
+                     labels = c("FALSE" = "Peaked in past", "TRUE" = "Recent peak"),
+                     name = NULL) +
+  labs(title = "Peak quarter of each top-40 topic",
+       subtitle = "Green = still rising; red = past its high-water mark",
+       x = "Peak quarter", y = NULL) +
+  theme(legend.position = "bottom")
+```
+
+---
+
+## Idea 11: pushers-per-developer intensity by tier
+
+`languages.csv` counts language-pushers (a dev who pushes 3 languages
+counts 3×). `developers.csv` counts unique devs. Their ratio = breadth
+of activity per developer. Does the average dev push more languages in
+high-HDI economies?
+
+```{r idea11}
+intensity <- langs_snap |>
+  group_by(iso2_code, hdi_tier, hdi_2022) |>
+  summarise(lang_pushes = sum(num_pushers), .groups = "drop") |>
+  inner_join(devs_snap |> select(iso2_code, developers),
+             by = "iso2_code") |>
+  mutate(pushes_per_dev = lang_pushes / developers) |>
+  filter(developers >= 200)
+
+ggplot(intensity, aes(hdi_2022, pushes_per_dev, color = hdi_tier)) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_smooth(se = FALSE, method = "loess", formula = y ~ x,
+              color = "grey25", linewidth = 0.5) +
+  scale_color_brewer(palette = "RdYlBu") +
+  labs(title = "Language-pushes per developer vs. HDI",
+       subtitle = "Higher = the average dev there touches more languages per quarter",
+       x = "HDI (2022)", y = "Language-pushes ÷ developers")
+```
+
+---
+
+## Idea 12: outliers — punching above their HDI weight
+
+Fit `log(developers) ~ HDI` across countries; pull the biggest positive and
+negative residuals. These are the economies that have *more* (or less)
+GitHub presence than their HDI predicts.
+
+```{r idea12}
+fit_df <- devs_snap |>
+  filter(developers >= 1000) |>
+  mutate(log_devs = log10(developers))
+
+m <- lm(log_devs ~ hdi_2022, data = fit_df)
+
+fit_df |>
+  mutate(resid = resid(m)) |>
+  slice_max(abs(resid), n = 20) |>
+  ggplot(aes(resid, fct_reorder(country, resid), fill = resid > 0)) +
+  geom_col() +
+  scale_fill_manual(values = c("TRUE" = "#1a9850", "FALSE" = "#d73027"),
+                    guide = "none") +
+  labs(title = "Top 20 over/under-performers relative to HDI",
+       subtitle = "Residuals from log10(developers) ~ HDI",
+       x = "Residual (log-scale)", y = NULL)
+```
+
+---
+
+## Idea 13: country language-rank stability
+
+For each country's top language, how stable is that ranking over time?
+Plot rank-of-top-language across quarters for the 12 biggest economies.
+
+```{r idea13}
+big12 <- devs_snap |> slice_max(developers, n = 12) |> pull(iso2_code)
+
+ranks <- langs |>
+  filter(iso2_code %in% big12) |>
+  group_by(iso2_code, year, quarter) |>
+  mutate(rank = rank(-num_pushers, ties.method = "min")) |>
+  ungroup() |>
+  filter(language %in% c("Python", "JavaScript", "Java", "TypeScript", "HTML")) |>
+  mutate(date = yq(paste0(year, " Q", quarter)))
+
+ggplot(ranks, aes(date, rank, color = language)) +
+  geom_line(linewidth = 0.7) +
+  scale_y_reverse(breaks = 1:10) +
+  facet_wrap(~ iso2_code, ncol = 4) +
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "Rank of major languages over time, 12 biggest GitHub economies",
+       subtitle = "Lower = higher rank. Are the leaderboards stable?",
+       x = NULL, y = "Rank")
+```
+
+---
+
+## Idea 14: repos per developer — productivity proxy
+
+Per-country average of repos / developers, faceted by tier. Captures
+"output per head" rather than total mass.
+
+```{r idea14}
+repos_snap |>
+  inner_join(devs_snap |> select(iso2_code, developers),
+             by = "iso2_code") |>
+  filter(developers >= 1000) |>
+  mutate(ratio = repositories / developers) |>
+  ggplot(aes(hdi_tier, ratio, fill = hdi_tier)) +
+  geom_violin(alpha = 0.6) +
+  geom_jitter(width = 0.15, alpha = 0.6, size = 1) +
+  scale_fill_brewer(palette = "RdYlBu", guide = "none") +
+  labs(title = "Repositories per developer, by HDI tier",
+       subtitle = "Distribution across countries with >1k devs",
+       x = "HDI tier", y = "Repos ÷ developers")
+```
+
+---
+
+## Idea 15: AI/LLM explosion line chart
+
+Specifically the 2023-2024 inflection on AI-adjacent topics, indexed to
+their respective 2020-Q1 baselines.
+
+```{r idea15}
+ai_topics <- c("ai", "llm", "deep-learning", "machine-learning",
+               "openai", "langchain")
+
+ai_panel <- topics |>
+  filter(topic %in% ai_topics) |>
+  group_by(topic, year, quarter) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  group_by(topic) |>
+  mutate(base = first(pushers[year == 2020 & quarter == 1]),
+         index = pushers / base,
+         date = yq(paste0(year, " Q", quarter)))
+
+ggplot(ai_panel, aes(date, index, color = topic)) +
+  geom_line(linewidth = 0.9) +
+  geom_hline(yintercept = 1, color = "grey70") +
+  scale_color_brewer(palette = "Dark2") +
+  labs(title = "AI-adjacent topic growth, indexed to 2020-Q1 = 1",
+       subtitle = "Where exactly did each curve break upward?",
+       x = NULL, y = "Index (2020-Q1 = 1)")
+```
+
+---
+
+## Idea 16: language-family × tier alluvial / stacked
+
+Skip the heatmap — show *flow*. Each tier as a column on the left, each
+language family on the right, ribbon thickness = pushers. Useful for
+"what mix lives in each tier" in one glance.
+
+```{r idea16}
+families <- tibble::tribble(
+  ~language,        ~family,
+  "Python",         "Scripting",
+  "Ruby",           "Scripting",
+  "PHP",            "Scripting",
+  "JavaScript",     "Web",
+  "TypeScript",     "Web",
+  "HTML",           "Web",
+  "CSS",            "Web",
+  "Java",           "JVM/.NET",
+  "C#",             "JVM/.NET",
+  "Kotlin",         "Mobile",
+  "Swift",          "Mobile",
+  "Dart",           "Mobile",
+  "C",              "Systems",
+  "C++",            "Systems",
+  "Rust",           "Systems",
+  "Go",             "Cloud backend",
+  "Shell",          "DevOps",
+  "Dockerfile",     "DevOps",
+  "Jupyter Notebook","Data science",
+  "R",              "Data science"
+)
+
+langs_snap |>
+  inner_join(families, by = "language") |>
+  group_by(hdi_tier, family) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  group_by(hdi_tier) |>
+  mutate(share = pushers / sum(pushers)) |>
+  ggplot(aes(hdi_tier, share, fill = family)) +
+  geom_col() +
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(title = "Language family mix within each HDI tier",
+       subtitle = "Stacked share; reorder if a true alluvial is wanted",
+       x = "HDI tier", y = "Share")
+```
+
+---
+
+## Idea 17: top "punching above weight" countries on a chosen topic
+
+For one topic (say `solidity`), rank countries by their share of pushers
+*divided by* their overall GitHub footprint. Highlights economies for
+which the topic is disproportionately important.
+
+```{r idea17}
+chosen <- "solidity"
+
+ctry_total <- topics_snap |>
+  group_by(iso2_code, country, hdi_tier) |>
+  summarise(total = sum(num_pushers), .groups = "drop")
+
+topics_snap |>
+  filter(topic == chosen) |>
+  inner_join(ctry_total, by = c("iso2_code", "country", "hdi_tier")) |>
+  mutate(intensity = num_pushers / total) |>
+  filter(total >= 200) |>
+  slice_max(intensity, n = 20) |>
+  ggplot(aes(intensity, fct_reorder(country, intensity), fill = hdi_tier)) +
+  geom_col() +
+  scale_x_continuous(labels = label_percent()) +
+  scale_fill_brewer(palette = "RdYlBu") +
+  labs(title = sprintf("Where is '%s' a disproportionately big share?", chosen),
+       subtitle = "Share of country's pushers on this topic; ≥200 total pushers",
+       x = "Topic share", y = NULL)
+```
+
+---
+
+## Idea 18: language-type evolution over time
+
+Has the *mix* of programming / markup / data / prose changed since 2020?
+Globally, not by tier.
+
+```{r idea18}
+langs |>
+  group_by(year, quarter, language_type) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  group_by(year, quarter) |>
+  mutate(share = pushers / sum(pushers),
+         date = yq(paste0(year, " Q", quarter))) |>
+  ggplot(aes(date, share, fill = language_type)) +
+  geom_area(alpha = 0.85) +
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Global language_type mix over time",
+       x = NULL, y = "Share of global pushers")
+```
+
+---
+
+## Next steps
+
+Hot picks worth promoting to their own polished chart:
+
+-   **Idea 2** (HDI delta vs. footprint) and **Idea 12** (outliers) tell a
+    story the existing notebooks can't — they highlight individual
+    countries instead of tiers.
+-   **Idea 9** (first-appearance on AI topics) and **Idea 15** (AI
+    explosion) frame the LLM moment differently — when, not how much.
+-   **Idea 6 / 7** (diversity) is a single-number summary that maps
+    cleanly to HDI and could even drive an index.
+-   **Idea 11** (pushes per developer) is the one number that disentangles
+    "more devs" from "more active devs".
+
+Anything that survives a second look can move into `languages_by_hdi.qmd`
+or `topics_by_hdi.qmd`, or get its own notebook.

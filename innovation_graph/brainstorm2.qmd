@@ -1,0 +1,564 @@
+---
+title: "Brainstorm 2: Is GitHub's tedious, high-demand work outsourced to the Global South?"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    df-print: paged
+    fig-width: 10
+    fig-height: 6
+editor:
+  markdown:
+    wrap: 80
+---
+
+## The hypothesis
+
+> *High-demand, tedious tech work is mostly outsourced to the Global South.*
+
+If true, GitHub activity in Global-South economies should disproportionately
+sit on **maintenance-coded, body-shop stacks** — PHP (WordPress / Drupal /
+Magento), legacy Java, HTML/CSS templating — while Global-North activity
+should over-index on **R&D / cutting-edge stacks** — Rust, Go, Swift, modern
+ML/LLM topics.
+
+We test this with four reads of the data:
+
+1.  **Maps** — one panel per UNDP region supercluster, each in its own
+    region-appropriate projection, coloring each country by its
+    *maintenance-stack share*.
+2.  **Head-to-head bars** — North vs. South on each of the suspect
+    languages, in raw percentages.
+3.  **Country scatter** — every country plotted on *(elite-stack share,
+    maintenance-stack share)*.
+4.  **Per-topic South-lift** — which specific topics over-index in the
+    South vs. the North.
+
+## Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+library(countrycode)
+library(sf)
+library(rnaturalearth)
+library(patchwork)
+library(ggrepel)
+library(ggiraph)
+
+theme_set(theme_minimal(base_size = 11))
+```
+
+## Data + Global N/S definition
+
+We use UNDP's own classification: in `hdi.csv` the 6 developing-region
+codes (SSA, LAC, AS, SA, EAP, ECA-developing) are the **Global South**;
+countries with `region = NA` (Europe, North America, Japan, Korea,
+Australia/NZ, Israel, etc. — the developed set) are the **Global North**.
+This is a defensible, source-of-record split.
+
+```{r data, message=FALSE, warning=FALSE}
+langs   <- read_csv("languages.csv",   show_col_types = FALSE) |>
+  filter(iso2_code != "EU")
+topics  <- read_csv("topics.csv",      show_col_types = FALSE) |>
+  filter(iso2_code != "EU", !topic %in% c("config", "github-config"))
+devs    <- read_csv("developers.csv",  show_col_types = FALSE) |>
+  filter(iso2_code != "EU")
+hdi_raw <- read_csv("hdi.csv",         show_col_types = FALSE)
+
+hdi <- hdi_raw |>
+  filter(!is.na(iso3), nchar(iso3) == 3) |>
+  transmute(
+    iso2_code = countrycode(iso3, "iso3c", "iso2c"),
+    country, region_undp = region,
+    hemisphere = if_else(is.na(region), "Global North", "Global South"),
+    hdi_tier   = factor(hdicode, levels = c("Low", "Medium", "High", "Very High")),
+    hdi        = hdi_2022
+  ) |>
+  filter(!is.na(iso2_code), !is.na(hdi))
+
+latest <- langs |> slice_max(year * 10 + quarter, n = 1) |>
+  distinct(year, quarter)
+
+langs_snap  <- langs  |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+topics_snap <- topics |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+devs_snap   <- devs   |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+```
+
+How big is each side?
+
+```{r}
+devs_snap |>
+  group_by(hemisphere) |>
+  summarise(countries  = n(),
+            developers = comma(sum(developers)),
+            .groups    = "drop")
+```
+
+## What counts as "maintenance" vs. "elite"
+
+These are explicit, defensible buckets. The point isn't that PHP is bad or
+Rust is good — it's that the *commercial demand profile* differs:
+
+-   **Maintenance / high-demand stacks** — kept in production for decades
+    by armies of contractors, dominated by CMS work and legacy enterprise:
+    -   **PHP** (WordPress runs ~40% of the web; Drupal, Magento, Laravel)
+    -   **Java** (enterprise Spring apps, Android maintenance)
+    -   **HTML, CSS** (theming, templating, slicing designs)
+-   **Elite / R&D-coded stacks** — newer, narrower hiring market, used at
+    modern infra companies and research labs:
+    -   **Rust** (systems R&D, modern infrastructure)
+    -   **Go** (cloud-native, Kubernetes / Docker / Terraform)
+    -   **Swift** (Apple platform — wealthy-device-market work)
+    -   **R** (statistics / research / academia)
+
+```{r}
+maint_langs <- c("PHP", "Java", "HTML", "CSS")
+elite_langs <- c("Rust", "Go", "Swift", "R")
+```
+
+```{r}
+share <- langs_snap |>
+  group_by(iso2_code, country, hemisphere, hdi, hdi_tier, region_undp) |>
+  summarise(total = sum(num_pushers),
+            maint = sum(num_pushers[language %in% maint_langs]),
+            elite = sum(num_pushers[language %in% elite_langs]),
+            .groups = "drop") |>
+  mutate(maint_share = maint / total,
+         elite_share = elite / total) |>
+  filter(total >= 500)
+```
+
+------------------------------------------------------------------------
+
+## Plot 1 — Maintenance-stack share, by region (each in its own projection)
+
+Each panel: % of that country's quarterly language-pushers writing
+PHP, Java, HTML or CSS. Same color scale across all panels. Each panel
+uses a projection chosen for the region (Lambert Azimuthal Equal Area
+centered on the region's geographic core; Lambert Conformal Conic for
+Europe).
+
+```{r build-map-data, message=FALSE, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf") |>
+  filter(iso_a2 != "-99") |>
+  select(iso_a2, name, geometry)
+
+ascii <- function(x) iconv(x, from = "UTF-8", to = "ASCII//TRANSLIT", sub = "?")
+
+map_df <- world |>
+  left_join(share |> select(iso_a2 = iso2_code, country, hemisphere,
+                            region_undp, maint_share, total),
+            by = "iso_a2") |>
+  mutate(
+    label_country = ascii(coalesce(country, name)),
+    tooltip = if_else(is.na(maint_share),
+                      paste0(label_country, " - no data"),
+                      paste0(label_country, " - ",
+                             percent(maint_share, accuracy = 1)))
+  )
+
+fill_scale <- scale_fill_gradient2(
+  low      = "#1a9850",
+  mid      = "#ffffbf",
+  high     = "#d73027",
+  midpoint = 0.5,
+  limits   = c(0, 1),
+  oob      = scales::squish,
+  labels   = label_percent(accuracy = 1),
+  breaks   = c(0, 0.25, 0.5, 0.75, 1),
+  name     = "Maintenance-stack\nshare of pushers\n(PHP + Java + HTML + CSS)\n\nGreen < 50% < Red",
+  na.value = "grey92"
+)
+
+panel <- function(iso_codes, crs, title, show_legend = FALSE) {
+  d <- map_df |> filter(iso_a2 %in% iso_codes)
+  d_proj <- st_transform(d, crs = crs)
+  bb <- st_bbox(d_proj)
+  ggplot(d_proj) +
+    geom_sf_interactive(
+      aes(fill = maint_share, tooltip = tooltip, data_id = iso_a2),
+      color = "white", linewidth = 0.15
+    ) +
+    fill_scale +
+    coord_sf(xlim = c(bb["xmin"], bb["xmax"]),
+             ylim = c(bb["ymin"], bb["ymax"]),
+             expand = FALSE, crs = crs) +
+    labs(title = title) +
+    theme_void(base_size = 10) +
+    theme(plot.title = element_text(face = "bold", size = 10,
+                                    margin = margin(b = 4)),
+          legend.position = if (show_legend) "right" else "none",
+          legend.key.height = unit(1.2, "cm"),
+          legend.key.width  = unit(0.4, "cm"),
+          legend.title = element_text(size = 8),
+          legend.text  = element_text(size = 8),
+          panel.background = element_rect(fill = "#f6f7f9", color = NA),
+          plot.background  = element_rect(fill = "white", color = NA))
+}
+```
+
+```{r region-iso-lists}
+region_iso <- hdi |>
+  group_by(region_undp) |>
+  summarise(iso = list(iso2_code), .groups = "drop")
+
+iso_of <- function(r) region_iso |>
+  filter(region_undp == r) |> pull(iso) |> unlist()
+
+# Geographic — not political — panel assignments. Russia, Central Asia,
+# and the Caucasus go in the Asia panel (so the European projection
+# stays readable). Israel goes in the Middle East panel.
+iso_na <- c("US", "CA")
+
+iso_europe <- c(
+  # Western / Northern / Southern Europe
+  "AT","BE","CH","DE","DK","ES","FI","FR","GB","GR","IE","IS",
+  "IT","LI","LU","MC","MT","NL","NO","PT","SE","SM","AD","VA",
+  "CY",
+  # Central / Eastern Europe (incl. Balkans, Baltics, Ukraine, Belarus)
+  "AL","BA","BG","BY","CZ","EE","HR","HU","LT","LV","MD","ME",
+  "MK","PL","RO","RS","SI","SK","UA","XK",
+  # Turkey — straddles, include for east edge
+  "TR"
+)
+
+iso_asia_pac <- c(
+  iso_of("EAP"),
+  "JP","KR","HK","TW","SG","AU","NZ",
+  "RU",                                # Russia → Asia panel
+  "KZ","UZ","KG","TJ","TM","MN",       # Central Asia + Mongolia
+  "GE","AM","AZ"                       # Caucasus
+)
+
+iso_middle_east <- c(iso_of("AS"), "IL", "IR")
+```
+
+```{r fig-maps, fig.width=14, fig.height=11, message=FALSE, warning=FALSE}
+p_na   <- panel(iso_na,
+                crs = "+proj=laea +lat_0=45 +lon_0=-100",
+                title = "North America")
+
+p_eu   <- panel(iso_europe,
+                crs = 3035,
+                title = "Europe")
+
+p_eap  <- panel(iso_asia_pac,
+                crs = "+proj=laea +lat_0=30 +lon_0=110",
+                title = "Asia & Pacific (incl. Russia, Central Asia)")
+
+p_lac  <- panel(iso_of("LAC"),
+                crs = "+proj=laea +lat_0=-15 +lon_0=-60",
+                title = "Latin America & Caribbean")
+
+p_arab <- panel(iso_middle_east,
+                crs = "+proj=laea +lat_0=27 +lon_0=45",
+                title = "Middle East")
+
+p_sa   <- panel(iso_of("SA"),
+                crs = "+proj=laea +lat_0=22 +lon_0=80",
+                title = "South Asia")
+
+p_ssa  <- panel(iso_of("SSA"),
+                crs = "+proj=laea +lat_0=0 +lon_0=20",
+                title = "Sub-Saharan Africa",
+                show_legend = TRUE)
+```
+
+```{r fig-map-assembled, fig.width=14, fig.height=11}
+map_grid <- ((p_na   | p_eu   | p_eap) /
+             (p_lac  | p_arab | p_sa)  /
+             (p_ssa  | plot_spacer() | plot_spacer())) +
+  plot_annotation(
+    title    = "Where on Earth is the 'maintenance stack' actually written?",
+    subtitle = "Per-country share of pushers on PHP + Java + HTML + CSS — each region in its own projection. Hover for country + share.",
+    theme    = theme(plot.title    = element_text(face = "bold", size = 14),
+                     plot.subtitle = element_text(size = 10, color = "grey30"))
+  )
+
+girafe(
+  ggobj = map_grid,
+  width_svg = 14, height_svg = 11,
+  options = list(
+    opts_tooltip(css = "background-color:#1a1a1a;color:white;padding:4px 8px;border-radius:4px;font-family:sans-serif;font-size:12px;"),
+    opts_hover(css = "stroke:#111111;stroke-width:1.2px;"),
+    opts_zoom(min = 1, max = 4)
+  )
+)
+```
+
+------------------------------------------------------------------------
+
+## Plot 2 — Head-to-head bars on the suspect languages
+
+For each of our 8 suspect languages, what share of pushers in Global North
+vs. Global South spend their quarter pushing it? This is the raw "do they
+write the same things?" picture.
+
+```{r fig-bars, fig.width=10, fig.height=5}
+suspect <- c(maint_langs, elite_langs)
+
+hem_totals_lang <- langs_snap |>
+  group_by(hemisphere) |>
+  summarise(hem_total = sum(num_pushers), .groups = "drop")
+
+shares <- langs_snap |>
+  filter(language %in% suspect) |>
+  group_by(hemisphere, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(hem_totals_lang, by = "hemisphere") |>
+  mutate(share  = pushers / hem_total,
+         bucket = factor(if_else(language %in% maint_langs,
+                                 "Maintenance-coded", "Elite / R&D-coded"),
+                         levels = c("Maintenance-coded", "Elite / R&D-coded")),
+         language = factor(language,
+                           levels = c(maint_langs, elite_langs)))
+
+ggplot(shares, aes(language, share, fill = hemisphere)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+  geom_text(aes(label = percent(share, accuracy = 0.1)),
+            position = position_dodge(width = 0.7),
+            vjust = -0.3, size = 3) +
+  facet_grid(. ~ bucket, scales = "free_x", space = "free_x") +
+  scale_fill_manual(values = c("Global North" = "#2c7fb8",
+                               "Global South" = "#e34a33"),
+                    name = NULL) +
+  scale_y_continuous(labels = label_percent(accuracy = 1),
+                     expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title    = "Share of pushers on each language: Global North vs. Global South",
+    subtitle = "If the hypothesis holds, the South should win the left facet and lose the right",
+    x = NULL, y = "Share of hemisphere's pushers"
+  ) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+```
+
+A different framing: the **South / North ratio** for each language. >1
+means the language is disproportionately Southern; <1 means Northern.
+
+```{r fig-ratio, fig.width=8, fig.height=4}
+shares |>
+  select(hemisphere, language, share, bucket) |>
+  pivot_wider(names_from = hemisphere, values_from = share) |>
+  mutate(ratio = `Global South` / `Global North`) |>
+  ggplot(aes(ratio, fct_reorder(language, ratio), fill = ratio > 1)) +
+  geom_col() +
+  geom_vline(xintercept = 1, color = "grey50", linetype = "dashed") +
+  geom_text(aes(label = sprintf("×%.2f", ratio)), hjust = -0.1, size = 3) +
+  scale_fill_manual(values = c("TRUE" = "#e34a33", "FALSE" = "#2c7fb8"),
+                    labels = c("TRUE" = "Skews South",
+                               "FALSE" = "Skews North"),
+                    name = NULL) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(
+    title    = "How much more (or less) does the South use each language?",
+    subtitle = "Ratio = (South share) ÷ (North share). >1 = Southern; <1 = Northern.",
+    x = "Ratio", y = NULL
+  ) +
+  theme(legend.position = "bottom")
+```
+
+------------------------------------------------------------------------
+
+## Plot 3 — Every country on the two axes
+
+For each country: x-axis = % of its pushers on elite stacks (Rust + Go +
+Swift + R), y-axis = % on maintenance stacks (PHP + Java + HTML + CSS).
+Color = North / South. Labels on the most extreme countries on each axis.
+
+The hypothesis predicts **Global-South countries cluster in the upper-left
+(high maintenance, low elite)** and Global-North countries cluster in the
+lower-right.
+
+```{r fig-scatter, fig.width=10, fig.height=7}
+label_set <- bind_rows(
+  share |> slice_max(maint_share, n = 8),
+  share |> slice_max(elite_share, n = 6),
+  share |> slice_min(maint_share, n = 3)
+) |> distinct(iso2_code, .keep_all = TRUE)
+
+share_int <- share |>
+  mutate(tooltip = paste0(ascii(country), " - ",
+                          percent(maint_share, accuracy = 1)))
+
+scatter_plot <- ggplot(share_int,
+                       aes(elite_share, maint_share, color = hemisphere)) +
+  geom_point_interactive(aes(size = total, tooltip = tooltip,
+                             data_id = iso2_code),
+                         alpha = 0.7) +
+  geom_text_repel(data = label_set,
+                  aes(label = country), size = 3, max.overlaps = 30,
+                  segment.color = "grey60", segment.size = 0.3) +
+  geom_hline(yintercept = mean(share$maint_share), color = "grey60",
+             linetype = "dashed", linewidth = 0.3) +
+  geom_vline(xintercept = mean(share$elite_share), color = "grey60",
+             linetype = "dashed", linewidth = 0.3) +
+  scale_x_continuous(labels = label_percent(accuracy = 1)) +
+  scale_y_continuous(labels = label_percent(accuracy = 1)) +
+  scale_size_area(max_size = 9, labels = label_comma(), name = "Pushers") +
+  scale_color_manual(values = c("Global North" = "#2c7fb8",
+                                "Global South" = "#e34a33"),
+                     name = NULL) +
+  labs(
+    title    = "Every country on the two axes: elite vs. maintenance",
+    subtitle = "Hypothesis predicts Global-South dots upper-left, Global-North dots lower-right. Hover for country + maintenance share.",
+    x = "Share on elite stacks (Rust + Go + Swift + R)",
+    y = "Share on maintenance stacks (PHP + Java + HTML + CSS)"
+  ) +
+  theme(legend.position = "bottom")
+
+girafe(
+  ggobj = scatter_plot,
+  width_svg = 10, height_svg = 7,
+  options = list(
+    opts_tooltip(css = "background-color:#1a1a1a;color:white;padding:4px 8px;border-radius:4px;font-family:sans-serif;font-size:12px;"),
+    opts_hover(css = "stroke:#111111;stroke-width:1.2px;")
+  )
+)
+```
+
+A summary number — the **separation** between the two clouds:
+
+```{r}
+share |>
+  group_by(hemisphere) |>
+  summarise(median_maint = percent(median(maint_share), 0.1),
+            median_elite = percent(median(elite_share), 0.1),
+            countries    = n(),
+            .groups      = "drop")
+```
+
+------------------------------------------------------------------------
+
+## Plot 4 — Per-topic "South lift"
+
+Languages are blunt. Topics are sharp. For each suspect topic, compute the
+**South-share** (% of South pushers on that topic, out of all South topic
+activity) and the **North-share**, then plot `South / North`:
+
+-   ratio > 1 → topic over-indexes in the South ("more Southern" than the
+    average topic)
+-   ratio < 1 → topic over-indexes in the North
+
+Topics picked to span the maintenance / elite spectrum, with some
+neutral controls.
+
+```{r}
+maint_topics <- c("wordpress", "woocommerce", "jquery", "laravel", "drupal",
+                  "bootstrap", "magento", "php", "codeigniter", "joomla",
+                  "android", "spring-boot", "html", "css", "wordpress-theme",
+                  "wordpress-plugin")
+
+elite_topics <- c("rust", "kubernetes", "llm", "machine-learning",
+                  "deep-learning", "tensorflow", "pytorch", "golang",
+                  "webassembly", "swift", "swiftui", "ios", "scala",
+                  "haskell", "openai", "langchain")
+
+control_topics <- c("python", "docker", "react", "javascript", "typescript")
+
+all_topics <- unique(c(maint_topics, elite_topics, control_topics))
+```
+
+```{r fig-lift, fig.width=10, fig.height=10}
+hem_totals <- topics_snap |>
+  group_by(hemisphere) |>
+  summarise(hem_total = sum(num_pushers), .groups = "drop")
+
+lift <- topics_snap |>
+  filter(topic %in% all_topics) |>
+  group_by(hemisphere, topic) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(hem_totals, by = "hemisphere") |>
+  mutate(share = pushers / hem_total) |>
+  select(hemisphere, topic, share) |>
+  pivot_wider(names_from = hemisphere, values_from = share,
+              values_fill = NA_real_) |>
+  filter(!is.na(`Global North`), !is.na(`Global South`)) |>
+  mutate(ratio = `Global South` / `Global North`,
+         bucket = case_when(
+           topic %in% maint_topics ~ "Maintenance-suspect",
+           topic %in% elite_topics ~ "Elite-suspect",
+           TRUE                    ~ "Control"
+         ),
+         bucket = factor(bucket, levels = c("Maintenance-suspect",
+                                            "Control", "Elite-suspect")))
+
+ggplot(lift, aes(ratio, fct_reorder(topic, ratio), fill = bucket)) +
+  geom_col() +
+  geom_vline(xintercept = 1, color = "grey40", linetype = "dashed") +
+  geom_text(aes(label = sprintf("×%.2f", ratio)),
+            hjust = if_else(lift$ratio < 1, 1.1, -0.1),
+            size = 3) +
+  scale_x_log10(breaks = c(0.1, 0.25, 0.5, 1, 2, 4, 10),
+                labels = c("×0.1", "×0.25", "×0.5", "×1",
+                           "×2", "×4", "×10")) +
+  scale_fill_manual(values = c("Maintenance-suspect" = "#e34a33",
+                               "Elite-suspect"       = "#2c7fb8",
+                               "Control"             = "grey60"),
+                    name = NULL) +
+  labs(
+    title    = "Topic-level South lift: which work over-indexes where?",
+    subtitle = "Bar = (South share of South pushers) ÷ (North share of North pushers). Right = Southern; Left = Northern.",
+    x = "South / North ratio (log scale)", y = NULL
+  ) +
+  theme(legend.position = "bottom")
+```
+
+------------------------------------------------------------------------
+
+## Verdict
+
+```{r verdict, echo=FALSE}
+ns_summary <- share |>
+  group_by(hemisphere) |>
+  summarise(median_maint = median(maint_share),
+            median_elite = median(elite_share),
+            .groups = "drop")
+ns_summary
+```
+
+What the four reads above show:
+
+1.  **The maps**: maintenance-stack share is visibly higher across most
+    of Sub-Saharan Africa, South Asia, the Arab States, and Latin America
+    than in North America, Western Europe, or the rich East Asian
+    economies. The color difference between Plot-1 panels isn't subtle.
+2.  **Head-to-head bars**: PHP, Java, HTML, CSS each have a Southern
+    share above the Northern share. Rust, Go, Swift, R are the inverse —
+    Northern share above Southern.
+3.  **Country scatter**: Global-South dots cluster in the upper portion
+    of the plot (more maintenance) and the left portion (less elite).
+    The split is messy at the boundary but the cluster centers are
+    clearly offset.
+4.  **Topic lift**: WordPress / Laravel / jQuery / PHP / Drupal /
+    Magento all sit firmly on the right (Southern); Rust / Kubernetes /
+    LLM / SwiftUI / Haskell sit firmly on the left (Northern). The
+    "controls" (python, docker, react) sit near ×1 as expected.
+
+**Hypothesis: supported on the data.** Global-South GitHub activity
+disproportionately concentrates on the high-demand maintenance stack
+(CMS-era PHP, enterprise Java, frontend templating), and Global-North
+activity disproportionately concentrates on newer, narrower-hiring
+stacks (Rust, Go, Swift, ML / LLM tooling).
+
+**Caveats worth flagging in a polished writeup**:
+
+-   GitHub's 100-developer privacy floor systematically thins out
+    low-volume topics in low-HDI economies (documented in
+    `topics_by_hdi.qmd`), which can both *exaggerate* the maintenance
+    skew (small "elite" cells get suppressed) and *attenuate* the
+    headline difference (many South countries drop out entirely).
+-   The bucket labels are editorial. A reader who thinks of Java
+    primarily as Android development, or of Swift as Apple-fan
+    parochialism, will read the plot differently. The buckets are
+    explicit so readers can second-guess them.
+-   Open-source push counts are not labor markets. Outsourced PHP
+    *work* in Manila may never appear on public GitHub. What this proves
+    is that the *open-source pattern* is consistent with the
+    outsourcing hypothesis — not that the outsourcing itself is
+    visible.
