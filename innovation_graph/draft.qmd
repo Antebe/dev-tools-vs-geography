@@ -1,0 +1,374 @@
+```{r}
+library(tidyverse)
+library(scales)
+library(countrycode)
+library(sf)
+library(rnaturalearth)
+library(patchwork)
+library(ggrepel)
+library(ggiraph)
+
+theme_set(theme_minimal(base_size = 11))
+```
+
+```{r}
+langs   <- read_csv("languages.csv",   show_col_types = FALSE) |>
+  filter(iso2_code != "EU")
+topics  <- read_csv("topics.csv",      show_col_types = FALSE) |>
+  filter(iso2_code != "EU", !topic %in% c("config", "github-config"))
+devs    <- read_csv("developers.csv",  show_col_types = FALSE) |>
+  filter(iso2_code != "EU")
+repos   <- read_csv("repositories.csv", show_col_types = FALSE) |>
+  filter(iso2_code != "EU")
+hdi_raw <- read_csv("hdi.csv",         show_col_types = FALSE)
+
+latest <- langs |> slice_max(year * 10 + quarter, n = 1) |>
+  distinct(year, quarter)
+
+hdi <- hdi_raw |>
+  transmute(
+    iso2_code = countrycode(iso3, "iso3c", "iso2c"),
+    country   = country,
+    region    = region,
+    region_undp = region,
+    hdi_tier  = factor(hdicode, levels = c("Low", "Medium", "High", "Very High")),
+    hemisphere = if_else(is.na(region), "Global North", "Global South"),
+    hdi       = hdi_2022
+  ) |>
+  filter(!is.na(iso2_code), !is.na(hdi))
+
+snap <- langs |>
+  semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+
+latest <- langs |> slice_max(year * 10 + quarter, n = 1) |>
+  distinct(year, quarter)
+
+langs_snap  <- langs  |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+topics_snap <- topics |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+devs_snap   <- devs   |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+repos_snap  <- repos  |> semi_join(latest, by = c("year", "quarter")) |>
+  inner_join(hdi, by = "iso2_code")
+```
+
+```{r}
+focus_langs <- c("Python", "JavaScript", "TypeScript", "Java", "C++",
+                 "C#", "Go", "Rust", "PHP", "Ruby",
+                 "HTML", "Shell", "Kotlin", "Swift", "R")
+
+tier_totals <- snap |>
+  group_by(hdi_tier) |>
+  summarise(tier_total = sum(num_pushers), .groups = "drop")
+
+tier_lang <- snap |>
+  filter(language %in% focus_langs) |>
+  group_by(hdi_tier, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(tier_totals, by = "hdi_tier") |>
+  mutate(share = pushers / tier_total) |>
+  mutate(text_color = if_else(share > 0.5 * max(share), "white", "grey15"))
+
+total_panel <- langs |>
+  inner_join(hdi |> select(iso2_code, hdi_tier), by = "iso2_code") |>
+  group_by(year, quarter, hdi_tier) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  mutate(date = yq(paste0(year, " Q", quarter)))
+
+total_base <- total_panel |>
+  filter(year == 2020, quarter == 1) |>
+  select(hdi_tier, base = pushers)
+
+total_panel |>
+  inner_join(total_base, by = "hdi_tier") |>
+  mutate(index = pushers / base) |>
+  ggplot(aes(date, index, color = hdi_tier)) +
+  geom_hline(yintercept = 1, color = "grey70", linewidth = 0.3) +
+  geom_line(linewidth = 1) +
+  scale_color_brewer(palette = "RdYlBu", name = "HDI tier") +
+  labs(
+    title    = "GitHub pusher growth by HDI tier, indexed to 2020-Q1",
+    x = NULL, y = "Index (2020-Q1 = 1)"
+  )
+```
+
+```{r}
+lang_groups <- tribble(
+  ~group,                ~language,
+  # ---- Web (frontend) ----
+  "Web frontend",        "JavaScript",
+  "Web frontend",        "TypeScript",
+  "Web frontend",        "HTML",
+  "Web frontend",        "CSS",
+  "Web frontend",        "SCSS",
+  "Web frontend",        "Less",
+  "Web frontend",        "Vue",
+  "Web frontend",        "Svelte",
+  "Web frontend",        "EJS",
+  "Web frontend",        "Handlebars",
+  "Web frontend",        "Blade",
+  "Web frontend",        "Smarty",
+  "Web frontend",        "Pug",
+
+  # ---- Mobile ----
+  "Mobile",              "Swift",
+  "Mobile",              "Objective-C",
+  "Mobile",              "Objective-C++",
+  "Mobile",              "Kotlin",
+  "Mobile",              "Dart",
+
+  # ---- Systems / low-level ----
+  "Systems",             "C",
+  "Systems",             "C++",
+  "Systems",             "Rust",
+  "Systems",             "Assembly",
+  "Systems",             "Zig",
+
+  # ---- Enterprise / JVM / .NET ----
+  "Enterprise / JVM / .NET", "Java",
+  "Enterprise / JVM / .NET", "C#",
+  "Enterprise / JVM / .NET", "Scala",
+  "Enterprise / JVM / .NET", "F#",
+  "Enterprise / JVM / .NET", "Groovy",
+  "Enterprise / JVM / .NET", "Visual Basic .NET",
+
+  # ---- Cloud-native backend ----
+  "Cloud backend",       "Go",
+  "Cloud backend",       "Elixir",
+  "Cloud backend",       "Erlang",
+
+  # ---- Scripting / general-purpose ----
+  "Scripting",           "Python",
+  "Scripting",           "Ruby",
+  "Scripting",           "PHP",
+  "Scripting",           "Perl",
+  "Scripting",           "Lua",
+  "Scripting",           "Hack",
+
+  # ---- Data science / scientific ----
+  "Data science",        "Jupyter Notebook",
+  "Data science",        "R",
+  "Data science",        "MATLAB",
+  "Data science",        "Julia",
+  "Data science",        "Stata",
+  "Data science",        "SAS",
+
+  # ---- DevOps / shell / config ----
+  "DevOps / config",     "Shell",
+  "DevOps / config",     "PowerShell",
+  "DevOps / config",     "Dockerfile",
+  "DevOps / config",     "Makefile",
+  "DevOps / config",     "CMake",
+  "DevOps / config",     "HCL",
+  "DevOps / config",     "Batchfile",
+  "DevOps / config",     "Nix",
+  "DevOps / config",     "Starlark",
+  "DevOps / config",     "Procfile",
+
+  # ---- Game / graphics ----
+  "Game / graphics",     "GLSL",
+  "Game / graphics",     "HLSL",
+  "Game / graphics",     "ShaderLab",
+  "Game / graphics",     "GDScript",
+
+  # ---- Smart contracts ----
+  "Smart contracts",     "Solidity",
+  "Smart contracts",     "Vyper"
+) |>
+  mutate(group = factor(group, levels = c(
+    "Web frontend", "Mobile", "Systems", "Enterprise / JVM / .NET",
+    "Cloud backend", "Scripting", "Data science",
+    "DevOps / config", "Game / graphics", "Smart contracts"
+  )))
+
+grouped <- snap |> inner_join(lang_groups, by = "language")
+
+snap |>
+  summarise(grouped   = sum(num_pushers[language %in% lang_groups$language]),
+            total     = sum(num_pushers)) |>
+  mutate(coverage = percent(grouped / total, accuracy = 0.1))
+```
+
+```{r}
+maint_langs <- c("PHP", "Java", "HTML", "CSS")
+elite_langs <- c("Rust", "Go", "Swift", "R")
+suspect <- c(maint_langs, elite_langs)
+
+hem_totals_lang <- langs_snap |>
+  group_by(hemisphere) |>
+  summarise(hem_total = sum(num_pushers), .groups = "drop")
+
+shares <- langs_snap |>
+  filter(language %in% suspect) |>
+  group_by(hemisphere, language) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(hem_totals_lang, by = "hemisphere") |>
+  mutate(share  = pushers / hem_total,
+         bucket = factor(if_else(language %in% maint_langs,
+                                 "Maintenance-coded", "Elite / R&D-coded"),
+                         levels = c("Maintenance-coded", "Elite / R&D-coded")),
+         language = factor(language,
+                           levels = c(maint_langs, elite_langs)))
+
+share <- langs_snap |>
+  group_by(iso2_code, country, hemisphere, hdi, hdi_tier, region_undp) |>
+  summarise(total = sum(num_pushers),
+            maint = sum(num_pushers[language %in% maint_langs]),
+            elite = sum(num_pushers[language %in% elite_langs]),
+            .groups = "drop") |>
+  mutate(maint_share = maint / total,
+         elite_share = elite / total) |>
+  filter(total >= 500)
+```
+
+```{r}
+lang_meanhdi <- snap |>
+  filter(language %in% focus_langs) |>
+  group_by(language) |>
+  summarise(
+    mean_hdi = weighted.mean(hdi, num_pushers),
+    pushers  = sum(num_pushers),
+    .groups  = "drop"
+  )
+
+global_mean <- weighted.mean(snap$hdi, snap$num_pushers)
+
+ggplot(lang_meanhdi,
+       aes(mean_hdi, fct_reorder(language, mean_hdi),
+           color = mean_hdi)) +
+  geom_vline(xintercept = global_mean, linetype = "dashed",
+             color = "grey50") +
+  geom_segment(aes(x = global_mean, xend = mean_hdi, yend = language),
+               linewidth = 0.6) +
+  geom_point(size = 3) +
+  scale_color_viridis_c(option = "mako", direction = -1, guide = "none") +
+  annotate("text", x = global_mean, y = 0.6,
+           label = sprintf("Global mean (%.3f)", global_mean),
+           hjust = -0.05, vjust = 0, size = 3, color = "grey40") +
+  labs(
+    title    = "Pusher-weighted average HDI of each language's users",
+    subtitle = "Right of dashed line = skews toward higher-HDI economies",
+    x = "Mean HDI", y = NULL
+  )
+```
+
+```{r}
+country_totals <- snap |>
+  group_by(iso2_code, hdi, hdi_tier) |>
+  summarise(total = sum(num_pushers), .groups = "drop")
+
+grp_scat <- grouped |>
+  group_by(iso2_code, group) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  inner_join(country_totals, by = "iso2_code") |>
+  mutate(share = pushers / total) |>
+  filter(total >= 500)
+
+ggplot(grp_scat, aes(hdi, share)) +
+  geom_point(aes(size = total, color = hdi_tier), alpha = 0.55) +
+  geom_smooth(aes(weight = total), method = "loess", se = FALSE,
+              color = "grey25", linewidth = 0.6, formula = y ~ x) +
+  facet_wrap(~ group, scales = "free_y", ncol = 4) +
+  scale_size_area(max_size = 5, labels = label_comma(),
+                  name = "Pushers") +
+  scale_y_continuous(labels = label_percent()) +
+  scale_color_brewer(palette = "RdYlBu", name = "HDI tier") +
+  labs(
+    title    = "Group share vs. HDI",
+    subtitle = "Slope of the line = how much this kind of work skews with development",
+    x = "HDI (2022)", y = "Share of country's pushers"
+  ) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+```
+
+```{r}
+families <- tibble::tribble(
+  ~language,        ~family,
+  "Python",         "Scripting",
+  "Ruby",           "Scripting",
+  "PHP",            "Scripting",
+  "JavaScript",     "Web",
+  "TypeScript",     "Web",
+  "HTML",           "Web",
+  "CSS",            "Web",
+  "Java",           "JVM/.NET",
+  "C#",             "JVM/.NET",
+  "Kotlin",         "Mobile",
+  "Swift",          "Mobile",
+  "Dart",           "Mobile",
+  "C",              "Systems",
+  "C++",            "Systems",
+  "Rust",           "Systems",
+  "Go",             "Cloud backend",
+  "Shell",          "DevOps",
+  "Dockerfile",     "DevOps",
+  "Jupyter Notebook","Data science",
+  "R",              "Data science"
+)
+
+langs_snap |>
+  inner_join(families, by = "language") |>
+  group_by(hdi_tier, family) |>
+  summarise(pushers = sum(num_pushers), .groups = "drop") |>
+  group_by(hdi_tier) |>
+  mutate(share = pushers / sum(pushers)) |>
+  ggplot(aes(hdi_tier, share, fill = family)) +
+  geom_col() +
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(title = "Language family mix within each HDI tier",
+       subtitle = "Stacked share; reorder if a true alluvial is wanted",
+       x = "HDI tier", y = "Share")
+```
+
+```{r}
+ascii <- function(x) iconv(x, from = "UTF-8", to = "ASCII//TRANSLIT", sub = "?")
+
+label_set <- bind_rows(
+  share |> slice_max(maint_share, n = 8),
+  share |> slice_max(elite_share, n = 6),
+  share |> slice_min(maint_share, n = 3)
+) |> distinct(iso2_code, .keep_all = TRUE)
+
+share_int <- share |>
+  mutate(tooltip = paste0(ascii(country), " - ",
+                          percent(maint_share, accuracy = 1)))
+
+scatter_plot <- ggplot(share_int,
+                       aes(elite_share, maint_share, color = hemisphere)) +
+  geom_point_interactive(aes(size = total, tooltip = tooltip,
+                             data_id = iso2_code),
+                         alpha = 0.7) +
+  geom_text_repel(data = label_set,
+                  aes(label = country), size = 3, max.overlaps = 30,
+                  segment.color = "grey60", segment.size = 0.3) +
+  geom_hline(yintercept = mean(share$maint_share), color = "grey60",
+             linetype = "dashed", linewidth = 0.3) +
+  geom_vline(xintercept = mean(share$elite_share), color = "grey60",
+             linetype = "dashed", linewidth = 0.3) +
+  scale_x_continuous(labels = label_percent(accuracy = 1)) +
+  scale_y_continuous(labels = label_percent(accuracy = 1)) +
+  scale_size_area(max_size = 9, labels = label_comma(), name = "Pushers") +
+  scale_color_manual(values = c("Global North" = "#2c7fb8",
+                                "Global South" = "#e34a33"),
+                     name = NULL) +
+  labs(
+    title    = "Every country on the two axes: elite vs. maintenance",
+    subtitle = "Hypothesis predicts Global-South dots upper-left, Global-North dots lower-right. Hover for country + maintenance share.",
+    x = "Share on elite stacks (Rust + Go + Swift + R)",
+    y = "Share on maintenance stacks (PHP + Java + HTML + CSS)"
+  ) +
+  theme(legend.position = "bottom")
+
+girafe(
+  ggobj = scatter_plot,
+  width_svg = 10, height_svg = 7,
+  options = list(
+    opts_tooltip(css = "background-color:#1a1a1a;color:white;padding:4px 8px;border-radius:4px;font-family:sans-serif;font-size:12px;"),
+    opts_hover(css = "stroke:#111111;stroke-width:1.2px;")
+  )
+)
+```

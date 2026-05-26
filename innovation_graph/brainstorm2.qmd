@@ -17,23 +17,22 @@ editor:
 
 > *High-demand, tedious tech work is mostly outsourced to the Global South.*
 
-If true, GitHub activity in Global-South economies should disproportionately
-sit on **maintenance-coded, body-shop stacks** — PHP (WordPress / Drupal /
-Magento), legacy Java, HTML/CSS templating — while Global-North activity
-should over-index on **R&D / cutting-edge stacks** — Rust, Go, Swift, modern
-ML/LLM topics.
+If true, GitHub activity in Global-South economies should disproportionately sit
+on **maintenance-coded, body-shop stacks** — PHP (WordPress / Drupal / Magento),
+legacy Java, HTML/CSS templating — while Global-North activity should over-index
+on **R&D / cutting-edge stacks** — Rust, Go, Swift, modern ML/LLM topics.
 
 We test this with four reads of the data:
 
 1.  **Maps** — one panel per UNDP region supercluster, each in its own
     region-appropriate projection, coloring each country by its
     *maintenance-stack share*.
-2.  **Head-to-head bars** — North vs. South on each of the suspect
-    languages, in raw percentages.
+2.  **Head-to-head bars** — North vs. South on each of the suspect languages, in
+    raw percentages.
 3.  **Country scatter** — every country plotted on *(elite-stack share,
     maintenance-stack share)*.
-4.  **Per-topic South-lift** — which specific topics over-index in the
-    South vs. the North.
+4.  **Per-topic South-lift** — which specific topics over-index in the South vs.
+    the North.
 
 ## Setup
 
@@ -52,11 +51,11 @@ theme_set(theme_minimal(base_size = 11))
 
 ## Data + Global N/S definition
 
-We use UNDP's own classification: in `hdi.csv` the 6 developing-region
-codes (SSA, LAC, AS, SA, EAP, ECA-developing) are the **Global South**;
-countries with `region = NA` (Europe, North America, Japan, Korea,
-Australia/NZ, Israel, etc. — the developed set) are the **Global North**.
-This is a defensible, source-of-record split.
+We use UNDP's own classification: in `hdi.csv` the 6 developing-region codes
+(SSA, LAC, AS, SA, EAP, ECA-developing) are the **Global South**; countries with
+`region = NA` (Europe, North America, Japan, Korea, Australia/NZ, Israel, etc. —
+the developed set) are the **Global North**. This is a defensible,
+source-of-record split.
 
 ```{r data, message=FALSE, warning=FALSE}
 langs   <- read_csv("languages.csv",   show_col_types = FALSE) |>
@@ -101,20 +100,20 @@ devs_snap |>
 
 ## What counts as "maintenance" vs. "elite"
 
-These are explicit, defensible buckets. The point isn't that PHP is bad or
-Rust is good — it's that the *commercial demand profile* differs:
+These are explicit, defensible buckets. The point isn't that PHP is bad or Rust
+is good — it's that the *commercial demand profile* differs:
 
--   **Maintenance / high-demand stacks** — kept in production for decades
-    by armies of contractors, dominated by CMS work and legacy enterprise:
-    -   **PHP** (WordPress runs ~40% of the web; Drupal, Magento, Laravel)
-    -   **Java** (enterprise Spring apps, Android maintenance)
-    -   **HTML, CSS** (theming, templating, slicing designs)
--   **Elite / R&D-coded stacks** — newer, narrower hiring market, used at
-    modern infra companies and research labs:
-    -   **Rust** (systems R&D, modern infrastructure)
-    -   **Go** (cloud-native, Kubernetes / Docker / Terraform)
-    -   **Swift** (Apple platform — wealthy-device-market work)
-    -   **R** (statistics / research / academia)
+- **Maintenance / high-demand stacks** — kept in production for decades by
+  armies of contractors, dominated by CMS work and legacy enterprise:
+  - **PHP** (WordPress runs \~40% of the web; Drupal, Magento, Laravel)
+  - **Java** (enterprise Spring apps, Android maintenance)
+  - **HTML, CSS** (theming, templating, slicing designs)
+- **Elite / R&D-coded stacks** — newer, narrower hiring market, used at modern
+  infra companies and research labs:
+  - **Rust** (systems R&D, modern infrastructure)
+  - **Go** (cloud-native, Kubernetes / Docker / Terraform)
+  - **Swift** (Apple platform — wealthy-device-market work)
+  - **R** (statistics / research / academia)
 
 ```{r}
 maint_langs <- c("PHP", "Java", "HTML", "CSS")
@@ -133,15 +132,14 @@ share <- langs_snap |>
   filter(total >= 500)
 ```
 
-------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 
 ## Plot 1 — Maintenance-stack share, by region (each in its own projection)
 
-Each panel: % of that country's quarterly language-pushers writing
-PHP, Java, HTML or CSS. Same color scale across all panels. Each panel
-uses a projection chosen for the region (Lambert Azimuthal Equal Area
-centered on the region's geographic core; Lambert Conformal Conic for
-Europe).
+Each panel: % of that country's quarterly language-pushers writing PHP, Java,
+HTML or CSS. Same color scale across all panels. Each panel uses a projection
+chosen for the region (Lambert Azimuthal Equal Area centered on the region's
+geographic core; Lambert Conformal Conic for Europe).
 
 ```{r build-map-data, message=FALSE, warning=FALSE}
 world <- ne_countries(scale = "medium", returnclass = "sf") |>
@@ -291,13 +289,13 @@ girafe(
 )
 ```
 
-------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 
 ## Plot 2 — Head-to-head bars on the suspect languages
 
-For each of our 8 suspect languages, what share of pushers in Global North
-vs. Global South spend their quarter pushing it? This is the raw "do they
-write the same things?" picture.
+For each of our 8 suspect languages, what share of pushers in Global North vs.
+Global South spend their quarter pushing it? This is the raw "do they write the
+same things?" picture.
 
 ```{r fig-bars, fig.width=10, fig.height=5}
 suspect <- c(maint_langs, elite_langs)
@@ -338,8 +336,8 @@ ggplot(shares, aes(language, share, fill = hemisphere)) +
         strip.text = element_text(face = "bold"))
 ```
 
-A different framing: the **South / North ratio** for each language. >1
-means the language is disproportionately Southern; <1 means Northern.
+A different framing: the **South / North ratio** for each language. \>1 means
+the language is disproportionately Southern; \<1 means Northern.
 
 ```{r fig-ratio, fig.width=8, fig.height=4}
 shares |>
@@ -363,17 +361,16 @@ shares |>
   theme(legend.position = "bottom")
 ```
 
-------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 
 ## Plot 3 — Every country on the two axes
 
-For each country: x-axis = % of its pushers on elite stacks (Rust + Go +
-Swift + R), y-axis = % on maintenance stacks (PHP + Java + HTML + CSS).
-Color = North / South. Labels on the most extreme countries on each axis.
+For each country: x-axis = % of its pushers on elite stacks (Rust + Go + Swift +
+R), y-axis = % on maintenance stacks (PHP + Java + HTML + CSS). Color = North /
+South. Labels on the most extreme countries on each axis.
 
-The hypothesis predicts **Global-South countries cluster in the upper-left
-(high maintenance, low elite)** and Global-North countries cluster in the
-lower-right.
+The hypothesis predicts **Global-South countries cluster in the upper-left (high
+maintenance, low elite)** and Global-North countries cluster in the lower-right.
 
 ```{r fig-scatter, fig.width=10, fig.height=7}
 label_set <- bind_rows(
@@ -433,7 +430,7 @@ share |>
             .groups      = "drop")
 ```
 
-------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 
 ## Plot 4 — Per-topic "South lift"
 
@@ -441,12 +438,12 @@ Languages are blunt. Topics are sharp. For each suspect topic, compute the
 **South-share** (% of South pushers on that topic, out of all South topic
 activity) and the **North-share**, then plot `South / North`:
 
--   ratio > 1 → topic over-indexes in the South ("more Southern" than the
-    average topic)
--   ratio < 1 → topic over-indexes in the North
+- ratio \> 1 → topic over-indexes in the South ("more Southern" than the average
+  topic)
+- ratio \< 1 → topic over-indexes in the North
 
-Topics picked to span the maintenance / elite spectrum, with some
-neutral controls.
+Topics picked to span the maintenance / elite spectrum, with some neutral
+controls.
 
 ```{r}
 maint_topics <- c("wordpress", "woocommerce", "jquery", "laravel", "drupal",
@@ -509,7 +506,7 @@ ggplot(lift, aes(ratio, fct_reorder(topic, ratio), fill = bucket)) +
   theme(legend.position = "bottom")
 ```
 
-------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 
 ## Verdict
 
@@ -524,41 +521,38 @@ ns_summary
 
 What the four reads above show:
 
-1.  **The maps**: maintenance-stack share is visibly higher across most
-    of Sub-Saharan Africa, South Asia, the Arab States, and Latin America
-    than in North America, Western Europe, or the rich East Asian
-    economies. The color difference between Plot-1 panels isn't subtle.
-2.  **Head-to-head bars**: PHP, Java, HTML, CSS each have a Southern
-    share above the Northern share. Rust, Go, Swift, R are the inverse —
-    Northern share above Southern.
-3.  **Country scatter**: Global-South dots cluster in the upper portion
-    of the plot (more maintenance) and the left portion (less elite).
-    The split is messy at the boundary but the cluster centers are
-    clearly offset.
-4.  **Topic lift**: WordPress / Laravel / jQuery / PHP / Drupal /
-    Magento all sit firmly on the right (Southern); Rust / Kubernetes /
-    LLM / SwiftUI / Haskell sit firmly on the left (Northern). The
-    "controls" (python, docker, react) sit near ×1 as expected.
+1.  **The maps**: maintenance-stack share is visibly higher across most of
+    Sub-Saharan Africa, South Asia, the Arab States, and Latin America than in
+    North America, Western Europe, or the rich East Asian economies. The color
+    difference between Plot-1 panels isn't subtle.
+2.  **Head-to-head bars**: PHP, Java, HTML, CSS each have a Southern share above
+    the Northern share. Rust, Go, Swift, R are the inverse — Northern share
+    above Southern.
+3.  **Country scatter**: Global-South dots cluster in the upper portion of the
+    plot (more maintenance) and the left portion (less elite). The split is
+    messy at the boundary but the cluster centers are clearly offset.
+4.  **Topic lift**: WordPress / Laravel / jQuery / PHP / Drupal / Magento all
+    sit firmly on the right (Southern); Rust / Kubernetes / LLM / SwiftUI /
+    Haskell sit firmly on the left (Northern). The "controls" (python, docker,
+    react) sit near ×1 as expected.
 
 **Hypothesis: supported on the data.** Global-South GitHub activity
-disproportionately concentrates on the high-demand maintenance stack
-(CMS-era PHP, enterprise Java, frontend templating), and Global-North
-activity disproportionately concentrates on newer, narrower-hiring
-stacks (Rust, Go, Swift, ML / LLM tooling).
+disproportionately concentrates on the high-demand maintenance stack (CMS-era
+PHP, enterprise Java, frontend templating), and Global-North activity
+disproportionately concentrates on newer, narrower-hiring stacks (Rust, Go,
+Swift, ML / LLM tooling).
 
 **Caveats worth flagging in a polished writeup**:
 
--   GitHub's 100-developer privacy floor systematically thins out
-    low-volume topics in low-HDI economies (documented in
-    `topics_by_hdi.qmd`), which can both *exaggerate* the maintenance
-    skew (small "elite" cells get suppressed) and *attenuate* the
-    headline difference (many South countries drop out entirely).
--   The bucket labels are editorial. A reader who thinks of Java
-    primarily as Android development, or of Swift as Apple-fan
-    parochialism, will read the plot differently. The buckets are
-    explicit so readers can second-guess them.
--   Open-source push counts are not labor markets. Outsourced PHP
-    *work* in Manila may never appear on public GitHub. What this proves
-    is that the *open-source pattern* is consistent with the
-    outsourcing hypothesis — not that the outsourcing itself is
-    visible.
+- GitHub's 100-developer privacy floor systematically thins out low-volume
+  topics in low-HDI economies (documented in `topics_by_hdi.qmd`), which can
+  both *exaggerate* the maintenance skew (small "elite" cells get suppressed)
+  and *attenuate* the headline difference (many South countries drop out
+  entirely).
+- The bucket labels are editorial. A reader who thinks of Java primarily as
+  Android development, or of Swift as Apple-fan parochialism, will read the plot
+  differently. The buckets are explicit so readers can second-guess them.
+- Open-source push counts are not labor markets. Outsourced PHP *work* in Manila
+  may never appear on public GitHub. What this proves is that the *open-source
+  pattern* is consistent with the outsourcing hypothesis — not that the
+  outsourcing itself is visible.
