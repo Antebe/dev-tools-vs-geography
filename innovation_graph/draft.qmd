@@ -1,9 +1,25 @@
+---
+title: "The Role of Different Countries on the Software Development Life Cycle (SDLC)"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    df-print: paged
+    fig-width: 9
+    fig-height: 6
+editor:
+  markdown:
+    wrap: 80
+execute: 
+  echo: false
+  output : false
+---
+
 ```{r}
 library(tidyverse)
 library(scales)
 library(countrycode)
 library(sf)
-library(rnaturalearth)
 library(patchwork)
 library(ggrepel)
 library(ggiraph)
@@ -54,7 +70,14 @@ repos_snap  <- repos  |> semi_join(latest, by = c("year", "quarter")) |>
   inner_join(hdi, by = "iso2_code")
 ```
 
+
+Computers have become a staple product across the world and especially in recent years, have experienced a boom in growth. And with more accessibility to computers, software development has also undergone significant growth.
+
+However, this growth is most significantly attributed to less developed countries as seen by the growth in Github pushers.
+
 ```{r}
+#| output: true
+
 focus_langs <- c("Python", "JavaScript", "TypeScript", "Java", "C++",
                  "C#", "Go", "Rust", "PHP", "Ruby",
                  "HTML", "Shell", "Kotlin", "Swift", "R")
@@ -89,8 +112,8 @@ total_panel |>
   geom_line(linewidth = 1) +
   scale_color_brewer(palette = "RdYlBu", name = "HDI tier") +
   labs(
-    title    = "GitHub pusher growth by HDI tier, indexed to 2020-Q1",
-    x = NULL, y = "Index (2020-Q1 = 1)"
+    title    = "Growth in GitHub contributors by HDI tier, indexed to 2020-Q1",
+    x = NULL, y = "Growth index (2020-Q1 = 1)"
   )
 ```
 
@@ -139,22 +162,6 @@ lang_groups <- tribble(
   "Cloud backend",       "Elixir",
   "Cloud backend",       "Erlang",
 
-  # ---- Scripting / general-purpose ----
-  "Scripting",           "Python",
-  "Scripting",           "Ruby",
-  "Scripting",           "PHP",
-  "Scripting",           "Perl",
-  "Scripting",           "Lua",
-  "Scripting",           "Hack",
-
-  # ---- Data science / scientific ----
-  "Data science",        "Jupyter Notebook",
-  "Data science",        "R",
-  "Data science",        "MATLAB",
-  "Data science",        "Julia",
-  "Data science",        "Stata",
-  "Data science",        "SAS",
-
   # ---- DevOps / shell / config ----
   "DevOps / config",     "Shell",
   "DevOps / config",     "PowerShell",
@@ -171,30 +178,35 @@ lang_groups <- tribble(
   "Game / graphics",     "GLSL",
   "Game / graphics",     "HLSL",
   "Game / graphics",     "ShaderLab",
-  "Game / graphics",     "GDScript",
-
-  # ---- Smart contracts ----
-  "Smart contracts",     "Solidity",
-  "Smart contracts",     "Vyper"
+  "Game / graphics",     "GDScript"
 ) |>
   mutate(group = factor(group, levels = c(
     "Web frontend", "Mobile", "Systems", "Enterprise / JVM / .NET",
-    "Cloud backend", "Scripting", "Data science",
-    "DevOps / config", "Game / graphics", "Smart contracts"
+    "Cloud backend", "DevOps / config", "Game / graphics"
   )))
 
 grouped <- snap |> inner_join(lang_groups, by = "language")
 
-snap |>
-  summarise(grouped   = sum(num_pushers[language %in% lang_groups$language]),
-            total     = sum(num_pushers)) |>
-  mutate(coverage = percent(grouped / total, accuracy = 0.1))
+group_colors <- c(
+  "Web frontend" = "#3C4679",
+  "Mobile" = "#72488D",
+  "Systems" = "#9F4D94",
+  "Enterprise / JVM / .NET" = "#C05B8D",
+  "Cloud backend" = "#D67279",
+  "DevOps / config" = "#DF905A",
+  "Game / graphics" = "#DBB13C"
+)
+
 ```
 
+
+
 ```{r}
+#| output: true
+
 maint_langs <- c("PHP", "Java", "HTML", "CSS")
-elite_langs <- c("Rust", "Go", "Swift", "R")
-suspect <- c(maint_langs, elite_langs)
+rd_langs <- c("Rust", "Go", "Swift", "R")
+suspect <- c(maint_langs, rd_langs)
 
 hem_totals_lang <- langs_snap |>
   group_by(hemisphere) |>
@@ -207,23 +219,31 @@ shares <- langs_snap |>
   inner_join(hem_totals_lang, by = "hemisphere") |>
   mutate(share  = pushers / hem_total,
          bucket = factor(if_else(language %in% maint_langs,
-                                 "Maintenance-coded", "Elite / R&D-coded"),
-                         levels = c("Maintenance-coded", "Elite / R&D-coded")),
+                                 "Maintenance-coded", "R&D-coded"),
+                         levels = c("Maintenance-coded", "R&D-coded")),
          language = factor(language,
-                           levels = c(maint_langs, elite_langs)))
+                           levels = c(maint_langs, rd_langs)))
 
 share <- langs_snap |>
   group_by(iso2_code, country, hemisphere, hdi, hdi_tier, region_undp) |>
   summarise(total = sum(num_pushers),
             maint = sum(num_pushers[language %in% maint_langs]),
-            elite = sum(num_pushers[language %in% elite_langs]),
+            rd = sum(num_pushers[language %in% rd_langs]),
             .groups = "drop") |>
   mutate(maint_share = maint / total,
-         elite_share = elite / total) |>
+         rd_share = rd / total) |>
   filter(total >= 500)
 ```
 
+Indeed, countries ranking lower on the Human Development Index (HDI) have experienced a much more rapid growth compared to that of more developed countries. 
+But why? A look into the types of software development and languages used can shine a light on this question.
+
+System languages such as Rust and newer languages such as Go tend to be more widely used in higher HDI countries given that systems often need less maintenance and newer languages tend to have fewer programs to maintain (with some languages like R and Shell being more one-shot scripts used more academically rather than in full applications). Contrasting from this, web development formats (especially very old standards such as PHP) are widely used in lower HDI countries, alluding to the swathe of software and applications using these languages that require continuous maintenance and upkeep.
+
+
 ```{r}
+#| output: true
+
 lang_meanhdi <- snap |>
   filter(language %in% focus_langs) |>
   group_by(language) |>
@@ -243,18 +263,27 @@ ggplot(lang_meanhdi,
   geom_segment(aes(x = global_mean, xend = mean_hdi, yend = language),
                linewidth = 0.6) +
   geom_point(size = 3) +
-  scale_color_viridis_c(option = "mako", direction = -1, guide = "none") +
+  scale_color_distiller(
+    palette = "RdYlBu",
+    direction = 1,
+    guide = "none"
+  ) +
   annotate("text", x = global_mean, y = 0.6,
            label = sprintf("Global mean (%.3f)", global_mean),
            hjust = -0.05, vjust = 0, size = 3, color = "grey40") +
   labs(
-    title    = "Pusher-weighted average HDI of each language's users",
-    subtitle = "Right of dashed line = skews toward higher-HDI economies",
+    title    = "Average HDI of countries where each language is used",
+    subtitle = "Languages to the right are used more in higher-HDI countries",
     x = "Mean HDI", y = NULL
   )
 ```
 
+And this is further supported by the kind of work done in the industry. Lower HDI countries tend to contribute most to web frontend and mobile development, which are both booming fields with constant updates and upkeep while much lower level systems and backend development is created from more developed countries.
+
+
 ```{r}
+#| output: true
+
 country_totals <- snap |>
   group_by(iso2_code, hdi, hdi_tier) |>
   summarise(total = sum(num_pushers), .groups = "drop")
@@ -276,69 +305,84 @@ ggplot(grp_scat, aes(hdi, share)) +
   scale_y_continuous(labels = label_percent()) +
   scale_color_brewer(palette = "RdYlBu", name = "HDI tier") +
   labs(
-    title    = "Group share vs. HDI",
-    subtitle = "Slope of the line = how much this kind of work skews with development",
-    x = "HDI (2022)", y = "Share of country's pushers"
+    title    = "Language group share by country HDI",
+    subtitle = "Each dot is a country; the line shows whether a group is more common in higher- or lower-HDI countries",
+    x = "HDI (2022)", y = "Share of a country's GitHub contributors"
   ) +
   theme(legend.position = "bottom",
         strip.text = element_text(face = "bold"))
 ```
 
+
+Within these fields, web development dominates worldwide. And with less developed countries holding most of the share in this market, the bulk of developers worldwide are rising from these countries.
+
+
 ```{r}
-families <- tibble::tribble(
-  ~language,        ~family,
-  "Python",         "Scripting",
-  "Ruby",           "Scripting",
-  "PHP",            "Scripting",
-  "JavaScript",     "Web",
-  "TypeScript",     "Web",
-  "HTML",           "Web",
-  "CSS",            "Web",
-  "Java",           "JVM/.NET",
-  "C#",             "JVM/.NET",
-  "Kotlin",         "Mobile",
-  "Swift",          "Mobile",
-  "Dart",           "Mobile",
-  "C",              "Systems",
-  "C++",            "Systems",
-  "Rust",           "Systems",
-  "Go",             "Cloud backend",
-  "Shell",          "DevOps",
-  "Dockerfile",     "DevOps",
-  "Jupyter Notebook","Data science",
-  "R",              "Data science"
-)
+#| output: true
 
 langs_snap |>
-  inner_join(families, by = "language") |>
-  group_by(hdi_tier, family) |>
+  inner_join(lang_groups, by = "language") |>
+  group_by(hdi_tier, group) |>
   summarise(pushers = sum(num_pushers), .groups = "drop") |>
   group_by(hdi_tier) |>
   mutate(share = pushers / sum(pushers)) |>
-  ggplot(aes(hdi_tier, share, fill = family)) +
+  ggplot(aes(hdi_tier, share, fill = group)) +
   geom_col() +
   scale_y_continuous(labels = label_percent()) +
-  scale_fill_brewer(palette = "Set3") +
-  labs(title = "Language family mix within each HDI tier",
-       subtitle = "Stacked share; reorder if a true alluvial is wanted",
-       x = "HDI tier", y = "Share")
+  scale_fill_manual(
+    values = group_colors,
+    name = "Language group"
+  ) +
+  labs(
+    title = "Language group mix within each HDI tier",
+    subtitle = "Each bar shows the mix of GitHub contributors by broad language group.",
+    x = "HDI tier",
+    y = "Share of contributors"
+  )
 ```
 
+The main work done contributing to these softwares is maintenance as opposed to systems level languages which focus more on the research and development of underlying systems that serve more as foundations for other software with less focus on constant upkeep. And with this, the bulk of the work done from less developed countries is in maintenance work and performing upkeep on more live-service programs.
+
+
+
 ```{r}
+#| output: true
+
 ascii <- function(x) iconv(x, from = "UTF-8", to = "ASCII//TRANSLIT", sub = "?")
+
+rd_power_trans <- scales::trans_new(
+  name = "rd_power",
+  transform = function(x) x^2,
+  inverse = function(x) sqrt(x)
+)
 
 label_set <- bind_rows(
   share |> slice_max(maint_share, n = 8),
-  share |> slice_max(elite_share, n = 6),
+  share |> slice_max(rd_share, n = 6),
   share |> slice_min(maint_share, n = 3)
 ) |> distinct(iso2_code, .keep_all = TRUE)
 
-share_int <- share |>
-  mutate(tooltip = paste0(ascii(country), " - ",
-                          percent(maint_share, accuracy = 1)))
+share_clean <- share |>
+  filter(
+    is.finite(maint_share),
+    is.finite(rd_share)
+  )
+
+label_set <- bind_rows(
+  share_clean |> slice_max(maint_share, n = 8),
+  share_clean |> slice_max(rd_share, n = 6),
+  share_clean |> slice_min(maint_share, n = 3)
+) |> distinct(iso2_code, .keep_all = TRUE)
+
+share_int <- share_clean |>
+  mutate(tooltip = paste0(
+    ascii(country), " - ",
+    "Maintenance share: ", percent(maint_share, accuracy = 1),
+    "; R&D share: ", percent(rd_share, accuracy = 1)
+  ))
 
 scatter_plot <- ggplot(share_int,
-                       aes(elite_share, maint_share, color = hemisphere)) +
+                       aes(rd_share, maint_share, color = hemisphere)) +
   geom_point_interactive(aes(size = total, tooltip = tooltip,
                              data_id = iso2_code),
                          alpha = 0.7) +
@@ -347,19 +391,22 @@ scatter_plot <- ggplot(share_int,
                   segment.color = "grey60", segment.size = 0.3) +
   geom_hline(yintercept = mean(share$maint_share), color = "grey60",
              linetype = "dashed", linewidth = 0.3) +
-  geom_vline(xintercept = mean(share$elite_share), color = "grey60",
+  geom_vline(xintercept = mean(share$rd_share), color = "grey60",
              linetype = "dashed", linewidth = 0.3) +
-  scale_x_continuous(labels = label_percent(accuracy = 1)) +
+  scale_x_continuous(
+    labels = label_percent(accuracy = 1),
+    trans = rd_power_trans
+  ) +
   scale_y_continuous(labels = label_percent(accuracy = 1)) +
   scale_size_area(max_size = 9, labels = label_comma(), name = "Pushers") +
   scale_color_manual(values = c("Global North" = "#2c7fb8",
                                 "Global South" = "#e34a33"),
                      name = NULL) +
   labs(
-    title    = "Every country on the two axes: elite vs. maintenance",
-    subtitle = "Hypothesis predicts Global-South dots upper-left, Global-North dots lower-right. Hover for country + maintenance share.",
-    x = "Share on elite stacks (Rust + Go + Swift + R)",
-    y = "Share on maintenance stacks (PHP + Java + HTML + CSS)"
+    title    = "Every country on two axes: R&D vs. maintenance",
+    subtitle = "Hover for country, maintenance share, and R&D share.",
+    x = "Share using R&D languages (Rust + Go + Swift + R)",
+    y = "Share using maintenance languages (PHP + Java + HTML + CSS)"
   ) +
   theme(legend.position = "bottom")
 
@@ -372,3 +419,6 @@ girafe(
   )
 )
 ```
+
+Less developed countries from the south follow the trend of holding much more significant shares on these web development languages, signalling software maintenance as a pathway for growth for these countries.
+Of course, this is not the only pathway for these countries. And as access to technology continues to grow across the globe, much of the work in both creating and maintaining software that we use could be fulfilled by developing countries.
